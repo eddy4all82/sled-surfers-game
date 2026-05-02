@@ -174,16 +174,20 @@ export class Game {
       coin: new Audio('/audio/coin.mp3'),
       crash: new Audio('/audio/crash.mp3'),
       ramp: new Audio('/audio/ramp.mp3'),
-      slide: new Audio('/audio/snow-slide.mp3'),
     };
     Object.values(this.sfx).forEach(audio => {
       audio.preload = 'auto';
       audio.load();
     });
-    this.sfx.slide.loop = true;
     this.sfx.parachute.loop = true;
-    this.sfx.slide.volume = 0;
+    this._ensureAudioContext();
+    this.slideBuffer = null;
+    this.slideSource = null;
+    this.slideGain = null;
     this._slideSoundActive = false;
+    this._loadAudioBuffer('/audio/snow-slide.mp3').then(buffer => {
+      this.slideBuffer = buffer;
+    }).catch(() => {});
     // Manual-loop fallback for browsers where the `loop` flag misbehaves
     this.bgMusic.addEventListener('ended', () => {
       if (this._musicShouldPlay) {
@@ -238,26 +242,36 @@ export class Game {
     }
   }
 
+  _loadAudioBuffer(url) {
+    return fetch(url)
+      .then(response => response.arrayBuffer())
+      .then(arrayBuffer => this.audioCtx.decodeAudioData(arrayBuffer));
+  }
+
   _createSlideSound() {
-    if (!this.sfx || !this.sfx.slide || this._slideSoundActive) return;
-    this._slideSoundActive = true;
-    this.sfx.slide.currentTime = 0;
-    const playPromise = this.sfx.slide.play();
-    if (playPromise && playPromise.catch) playPromise.catch(() => {});
+    // Not needed for Web Audio, handled in _setSlideSoundVolume
   }
 
   _setSlideSoundVolume(volume) {
-    if (!this.sfx || !this.sfx.slide) return;
-    const target = Math.min(Math.max(volume, 0), 1) * 0.24;
-    this.sfx.slide.volume = target;
-    if (target <= 0.001 && this._slideSoundActive) {
-      this.sfx.slide.pause();
-      this.sfx.slide.currentTime = 0;
-      this._slideSoundActive = false;
-    } else if (target > 0 && this.sfx.slide.paused) {
-      const playPromise = this.sfx.slide.play();
-      if (playPromise && playPromise.catch) playPromise.catch(() => {});
+    if (!this.slideBuffer) return;
+    const amplifiedVolume = volume * 2; // Amplify to increase loudness
+    if (amplifiedVolume > 0 && !this._slideSoundActive) {
       this._slideSoundActive = true;
+      this.slideSource = this.audioCtx.createBufferSource();
+      this.slideSource.buffer = this.slideBuffer;
+      this.slideGain = this.audioCtx.createGain();
+      this.slideGain.gain.value = amplifiedVolume;
+      this.slideSource.connect(this.slideGain);
+      this.slideGain.connect(this.audioCtx.destination);
+      this.slideSource.loop = true;
+      this.slideSource.start();
+    } else if (amplifiedVolume <= 0.001 && this._slideSoundActive) {
+      this.slideSource.stop();
+      this.slideSource = null;
+      this.slideGain = null;
+      this._slideSoundActive = false;
+    } else if (this._slideSoundActive) {
+      this.slideGain.gain.value = amplifiedVolume;
     }
   }
 
@@ -4356,6 +4370,7 @@ export class Game {
       const playPromise = crashAudio.play();
       if (playPromise && playPromise.catch) playPromise.catch(() => {});
     }
+    this._setSlideSoundVolume(0); // Stop snow-slide on crash
     // Plant a flag at the death spot showing the distance reached
     this._placeDeathFlag(position, this.distance);
     this._explode(position.clone(), hitType || 'car');
@@ -5125,11 +5140,10 @@ export class Game {
     this.player.position.x = this.playerX;
     const grounded = !this.isJumping && !this.airborneFromRamp && this.playerY <= 0.05;
     const slideIntensity = grounded
-      ? Math.min(1, Math.abs(this._playerXMomentum) / (GAME_CONFIG.HORIZONTAL_SPEED * 0.8))
+      ? Math.max(1, Math.min(1, Math.abs(this._playerXMomentum) / (GAME_CONFIG.HORIZONTAL_SPEED * 0.8)))
       : 0;
-    if (slideIntensity > 0) {
+    if (grounded) {
       this._ensureAudioContext();
-      this._createSlideSound();
       this._resumeAudioContext();
     }
     this._setSlideSoundVolume(slideIntensity);
