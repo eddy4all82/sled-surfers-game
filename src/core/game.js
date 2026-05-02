@@ -35,6 +35,7 @@ export class Game {
     this.confetti = [];                   // active confetti particles (win)
     this._confettiSpawned = false;
     this.mountainBlocks = [];             // 3D groups for MOUNTAIN_SPLIT chunks (Phase 3)
+    this.deathFlag = null;                // marker planted at the death spot
 
     // Player — continuous horizontal control (no fixed lanes)
     this.playerX = 0;            // float world X, clamped to [PLAYER_X_MIN..MAX]
@@ -60,13 +61,14 @@ export class Game {
     this.boostTimer = 0;
     this.shakeTimer = 0;
     this.shakeMagnitude = 0;
-    this.cameraBaseOffset = new THREE.Vector3(0, 8, -12);
-    // Two camera presets: NORMAL (default chase) and CLOSE (dramatic close-up
-    // used during ramps, jumps, and the mountain-split corridor).
-    this.cameraGroundOffset = new THREE.Vector3(0, 8, -12);
-    this.cameraAirOffset    = new THREE.Vector3(0, 5.5, -8);   // close-up
-    this.cameraGroundLook   = new THREE.Vector3(0, 2, 20);
-    this.cameraAirLook      = new THREE.Vector3(0, 2.5, 16);   // close-up look
+    this.cameraBaseOffset = new THREE.Vector3(0, 6.5, -9);
+    // Two camera presets: NORMAL chase and CLOSE dramatic shot. Both pulled
+    // in tighter than before so the player's true scale relative to cars,
+    // buildings, and rocks reads correctly.
+    this.cameraGroundOffset = new THREE.Vector3(0, 6.5, -9);
+    this.cameraAirOffset    = new THREE.Vector3(0, 4.5, -6.5); // even closer
+    this.cameraGroundLook   = new THREE.Vector3(0, 1.8, 16);
+    this.cameraAirLook      = new THREE.Vector3(0, 2.2, 12);
     this._cameraAirLerp = 0;
     // Brief hold so the close-up doesn't pop the moment the trigger ends,
     // but short enough that the return-to-normal feels snappy.
@@ -152,6 +154,37 @@ export class Game {
     this.winScreenEl = document.getElementById('win-screen');
     this.winStatsEl = document.getElementById('win-stats');
     this.winSeedEl = document.getElementById('win-seed');
+
+    // Background music — plays from the moment the player presses PLAY and
+    // keeps playing through gameplay, the explosion, and the game-over /
+    // game-won screens. Only stops when a brand-new round starts (so it
+    // restarts from the top of the track).
+    this.bgMusic = new Audio('/audio/game-music.mp3');
+    this.bgMusic.loop = true;
+    this.bgMusic.volume = 0.55;
+    this.bgMusic.preload = 'auto';
+    this._musicShouldPlay = false;
+    // Manual-loop fallback for browsers where the `loop` flag misbehaves
+    this.bgMusic.addEventListener('ended', () => {
+      if (this._musicShouldPlay) {
+        try { this.bgMusic.currentTime = 0; } catch (e) {}
+        const p = this.bgMusic.play();
+        if (p && p.catch) p.catch(() => {});
+      }
+    });
+    // If the audio gets paused for any external reason (tab autoplay policy,
+    // browser focus loss, etc.) try to resume on the next user interaction.
+    this.bgMusic.addEventListener('pause', () => {
+      if (this._musicShouldPlay && !this.bgMusic.ended) {
+        // Defer slightly so we don't fight an explicit pause from this code path
+        setTimeout(() => {
+          if (this._musicShouldPlay && this.bgMusic.paused) {
+            const p = this.bgMusic.play();
+            if (p && p.catch) p.catch(() => {});
+          }
+        }, 50);
+      }
+    });
     this._buildSpeedLines();
   }
 
@@ -2363,6 +2396,7 @@ export class Game {
       cap.position.set(0, 0.95, 0);
       group.add(cap);
     }
+    group.userData.height = 1.5; // boulder top — passable when py >= height-margin
     return group;
   }
 
@@ -2568,9 +2602,19 @@ export class Game {
     hR.position.x = s.W / 2 - 0.22;
     group.add(hR);
 
-    // Hit-box dims for collision
+    // Hit-box dims for collision (length × width × top-Y).
+    // Height is the world-Y of the vehicle's roof — the player needs to be
+    // above this minus a small margin to safely slide over the top.
+    const heights = {
+      taxi:      1.10,
+      suv:       1.30,
+      truck:     2.40,
+      cityBus:   1.90,
+      schoolBus: 1.15,
+    };
     group.userData.length = s.L;
-    group.userData.width = s.W;
+    group.userData.width  = s.W;
+    group.userData.height = heights[type] || 1.20;
     return group;
   }
 
@@ -3004,9 +3048,14 @@ export class Game {
         const carWorldZ = street.position.z + car.position.z;
         const dxCar = Math.abs(carWorldX - px);
         const dzCar = Math.abs(carWorldZ - pz);
-        const halfL = (car.userData.length || 3.0) / 2 + 0.3; // along X (rotated 90°)
-        const halfW = (car.userData.width  || 1.7) / 2 + 0.3; // across Z
-        if (dxCar < halfL && dzCar < halfW) return true;
+        const halfL = (car.userData.length || 3.0) / 2 + 0.3;
+        const halfW = (car.userData.width  || 1.7) / 2 + 0.3;
+        if (dxCar < halfL && dzCar < halfW) {
+          // Touching the top? Slide across instead of dying.
+          const top = car.userData.height || 1.5;
+          if (py >= top - 0.6 || py >= top * 0.65) continue;
+          return true;
+        }
       }
     }
     return false;
@@ -4149,7 +4198,77 @@ export class Game {
   _die(position, hitType, title) {
     if (this.state !== 'playing') return;
     this._pendingGameOverTitle = title || 'CRASHED!';
+    this._stopBgMusic();
+    // Plant a flag at the death spot showing the distance reached
+    this._placeDeathFlag(position, this.distance);
     this._explode(position.clone(), hitType || 'car');
+  }
+
+  _placeDeathFlag(position, distance) {
+    if (this.deathFlag) {
+      this.scene.remove(this.deathFlag);
+      this.deathFlag = null;
+    }
+    const group = new THREE.Group();
+
+    // Pole
+    const pole = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.08, 0.10, 4.2, 10),
+      new THREE.MeshStandardMaterial({ color: 0x444444, roughness: 0.65 }),
+    );
+    pole.position.y = 2.1;
+    pole.castShadow = true;
+    group.add(pole);
+
+    // Flag fabric — canvas with the distance written on it
+    const cnv = document.createElement('canvas');
+    cnv.width = 256; cnv.height = 128;
+    const ctx = cnv.getContext('2d');
+    const grad = ctx.createLinearGradient(0, 0, 256, 128);
+    grad.addColorStop(0, '#ff5a3c');
+    grad.addColorStop(1, '#ffae42');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, 256, 128);
+    ctx.strokeStyle = '#aa3700';
+    ctx.lineWidth = 6;
+    ctx.strokeRect(3, 3, 250, 122);
+    ctx.font = 'bold 28px Arial Black';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#ffe14a';
+    ctx.fillText('REACHED', 128, 32);
+    ctx.font = 'bold 60px Arial Black';
+    ctx.lineWidth = 6;
+    ctx.strokeStyle = '#aa3700';
+    ctx.fillStyle = '#ffffff';
+    const txt = `${Math.floor(distance)}m`;
+    ctx.strokeText(txt, 128, 80);
+    ctx.fillText(txt, 128, 80);
+    const tex = new THREE.CanvasTexture(cnv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+
+    const flag = new THREE.Mesh(
+      new THREE.PlaneGeometry(2.6, 1.3),
+      new THREE.MeshStandardMaterial({
+        map: tex, side: THREE.DoubleSide, roughness: 0.55,
+      }),
+    );
+    flag.position.set(1.35, 3.4, 0);
+    group.add(flag);
+
+    // Top cap
+    const cap = new THREE.Mesh(
+      new THREE.SphereGeometry(0.13, 12, 12),
+      new THREE.MeshStandardMaterial({
+        color: 0xFFD700, emissive: 0xffae42, emissiveIntensity: 0.7,
+      }),
+    );
+    cap.position.y = 4.25;
+    group.add(cap);
+
+    group.position.set(position.x, 0, position.z);
+    this.scene.add(group);
+    this.deathFlag = group;
   }
 
   _explosionTypeColors(hitType) {
@@ -4497,6 +4616,25 @@ export class Game {
     this.hud.style.display = 'block';
     this.startTime = performance.now();
     this.clock.start();
+    this._playBgMusic();
+  }
+
+  _playBgMusic() {
+    if (!this.bgMusic) return;
+    // Rewind so each new round starts at the top of the track
+    try { this.bgMusic.currentTime = 0; } catch (e) { /* not yet loaded */ }
+    this._musicShouldPlay = true;
+    const p = this.bgMusic.play();
+    // Browsers return a Promise from play(); swallow the unhandled-rejection
+    // that fires if the user hasn't gestured yet (we'll catch the next click).
+    if (p && typeof p.catch === 'function') p.catch(() => {});
+  }
+
+  _stopBgMusic() {
+    if (!this.bgMusic) return;
+    this._musicShouldPlay = false;
+    this.bgMusic.pause();
+    try { this.bgMusic.currentTime = 0; } catch (e) { /* ignore */ }
   }
 
   restart(opts = {}) {
@@ -4516,6 +4654,10 @@ export class Game {
       this._buildMountainBlocks();
     }
     this._clearConfetti();
+    if (this.deathFlag) {
+      this.scene.remove(this.deathFlag);
+      this.deathFlag = null;
+    }
     this._explosionDecel = 0;
     if (this.winScreenEl) this.winScreenEl.style.display = 'none';
     this.startTime = performance.now();
@@ -4604,6 +4746,8 @@ export class Game {
     this.hud.style.display = 'block';
     this.state = 'playing';
     this.clock.start();
+    // Music restarts from the top with each new round
+    this._playBgMusic();
   }
 
   gameOver(title) {
@@ -4906,16 +5050,33 @@ export class Game {
       this.cameraGroundLook, this.cameraAirLook, this._cameraAirLerp,
     );
 
-    // Lateral follow around the high-rise: while inside the corridor, the
-    // camera slides toward whichever side the player took. Snaps back to
-    // centered (X=0) the moment the player crosses past the building.
-    const wantXShift = splitFactor > 0 ? this.playerX * 0.55 * splitFactor : 0;
+    // Precise lateral follow — the camera tracks the player's X exactly so
+    // every small left/right turn is mirrored. Both the camera position and
+    // the look-at point shift by the full playerX, keeping the player dead
+    // centered in frame at all times.
+    camOffset.x += this.playerX;
+    camLook.x   += this.playerX;
+    // Around the high-rise the camera also leans an EXTRA bit in the same
+    // direction (on top of the precise follow), to clearly read which side
+    // the player took. This extra lean fades out once the corridor ends.
+    const wantXShift = splitFactor > 0 ? this.playerX * 0.35 * splitFactor : 0;
     const xLerpSpeed = Math.abs(wantXShift) > Math.abs(this._cameraXShift) ? 4 : 9;
     this._cameraXShift += (wantXShift - this._cameraXShift)
                         * Math.min(1, xLerpSpeed * delta);
     if (Math.abs(this._cameraXShift) < 0.01) this._cameraXShift = 0;
     camOffset.x += this._cameraXShift;
     camLook.x   += this._cameraXShift * 0.65;
+
+    // Vertical follow — camera rises with the player on a jump and falls
+    // back down. Look-at follows at 85 % of player altitude, so as the player
+    // climbs the camera tilts slightly DOWNWARD over the world; this is what
+    // makes the city look small from up high (correct perspective: angular
+    // size of distant ground geometry shrinks as the camera rises). A small
+    // Z-pullback at high altitude amplifies the aerial-view feel.
+    const followY = Math.max(0, this.playerY);
+    camOffset.y += followY;
+    camLook.y   += followY * 0.85;
+    camOffset.z -= followY * 0.25;
 
     // Approaching a mountain split? Briefly raise the camera so the fork in
     // the path reads clearly.
@@ -5041,6 +5202,7 @@ export class Game {
     if (this.mountainBlocks) {
       for (const m of this.mountainBlocks) m.position.z -= moveZ;
     }
+    if (this.deathFlag) this.deathFlag.position.z -= moveZ;
     this._updateGroundDetail(moveZ);
   }
 
@@ -5164,6 +5326,7 @@ export class Game {
   _win() {
     if (this.state !== 'playing') return;
     this.state = 'won';
+    this._stopBgMusic();
     if (!this._confettiSpawned) {
       this._spawnConfetti(0);  // confetti at the player's frame (z ≈ 0)
       this._confettiSpawned = true;
@@ -5210,9 +5373,10 @@ export class Game {
       }
     }
 
-    // Mountain-split high-rise collision. The building has a SAFE arch
-    // through the middle: X ∈ [-archHalfW, archHalfW] AND Y ∈ [archYMin, archYMax].
-    // Outside that arch zone (or above/below it), the building is solid.
+    // Mountain-split high-rise collision. The arch is a SAFE corridor — but
+    // ONLY if the player ENTERS through the arch (i.e. is centered in the
+    // arch X window AND already at the entrance floor altitude or above at
+    // first contact). Otherwise they crashed into the front wall / pillar.
     if (this.mountainBlocks) {
       for (const block of this.mountainBlocks) {
         if (block.userData.kind !== 'building') continue;
@@ -5220,18 +5384,49 @@ export class Game {
         const halfW = (block.userData.width  || 6) / 2;
         const dz = block.position.z;
         const insideZ = dz - halfL <= 0 && dz + halfL >= 0;
-        if (!insideZ) continue;
+
+        // Outside the building's Z footprint — clear the per-pass qualifier
+        if (!insideZ) {
+          block.userData._playerInArch = false;
+          continue;
+        }
+        // Above the roof? Pass freely.
+        if (py >= (block.userData.height || 28)) continue;
+
         const dxAbs = Math.abs(px - block.position.x);
-        if (dxAbs >= halfW) continue;        // not in building footprint
-        if (py >= (block.userData.height || 28)) continue;  // above the roof
+        if (dxAbs >= halfW) continue;            // not in X footprint
 
         const archHalfW = block.userData.archHalfW || 1.5;
         const archYMin  = block.userData.archYMin  || 3.0;
         const archYMax  = block.userData.archYMax  || 8.0;
-        const inArchX = dxAbs <= archHalfW;
-        const inArchY = py >= archYMin && py <= archYMax;
-        if (inArchX && inArchY) continue;    // safe — passing through the arch
+        const inArchX = dxAbs <= archHalfW + 0.4;
 
+        if (!block.userData._playerInArch) {
+          // First overlap with this building this pass — check entry.
+          // Must be lined up with the arch X AND at or above the entrance
+          // floor altitude. Anything else (low altitude, off-center) =
+          // crashed into the front wall / a pillar.
+          if (inArchX && py >= archYMin - 0.2) {
+            block.userData._playerInArch = true;
+          } else {
+            this._die(this.player.position, 'boulder', 'CRASHED!');
+            return;
+          }
+        }
+
+        // Already qualified — evaluate continuing safety.
+        if (inArchX && py <= archYMax + 0.5) {
+          // Snap up to the arch floor if below — landing inside the
+          // entrance places the player on the floor, not on the road.
+          if (this.playerY < archYMin) {
+            this.playerY = archYMin;
+            this.player.position.y = archYMin;
+            this.isJumping = true;
+            if (this.jumpVelocity < 0) this.jumpVelocity = 0;
+          }
+          continue;                          // safe — sliding through
+        }
+        // Drifted into a side pillar (lost X alignment) or hit the lintel.
         this._die(this.player.position, 'boulder', 'CRASHED!');
         return;
       }
@@ -5250,19 +5445,41 @@ export class Game {
       return;
     }
 
-    // Stationary on-course vehicle / boulder obstacles
+    // Stationary on-course vehicle / boulder obstacles. The player can RIDE
+    // along the top of an object: any time their Y is at or above
+    // `top - 0.6`, treat it as a safe surface contact. To make the slide
+    // read visually, snap playerY up to the obstacle's roof while overlapping
+    // — the player rides the surface and falls back off the back.
+    // A side hit (coming in below the roof minus the margin) still kills.
     if (!this.airborneFromRamp) {
+      let onTopOfSomething = false;
       for (const obs of this.obstacles) {
         const halfL = (obs.userData.length || 2.5) / 2 + 0.6;
         const halfW = (obs.userData.width  || 1.0) / 2 + 0.5;
+        const top   = (obs.userData.height || 1.5);
         const dz = Math.abs(obs.position.z);
         const dx = Math.abs(obs.position.x - px);
-        if (dz < halfL && dx < halfW && py < 1.5) {
+        if (dz < halfL && dx < halfW) {
+          // Generous "touching the top" tolerance — also catches the player
+          // when the obstacle's height fraction is met (≥ 65 %).
+          if (py >= top - 0.6 || py >= top * 0.65) {
+            // Snap up to the surface so we visibly ride the obstacle
+            if (this.playerY < top) {
+              this.playerY = top;
+              this.player.position.y = top;
+              this.isJumping = true;
+              if (this.jumpVelocity < 0) this.jumpVelocity = 0;
+            }
+            onTopOfSomething = true;
+            continue;
+          }
           const kind = obs.userData.vehicleType ? 'car' : 'boulder';
           this._die(this.player.position, kind, 'Game Over!');
           return;
         }
       }
+      // Tag for downstream systems (currently unused, available for tuning)
+      this._ridingObstacle = onTopOfSomething;
     }
 
     // Coin collection

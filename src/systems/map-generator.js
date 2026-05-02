@@ -34,7 +34,7 @@ export const CHUNK_WEIGHTS = [
   ['CITY_BLOCK',     12],
   ['FOREST',         10],
   ['LAKE_CROSSING',   6],
-  ['MOUNTAIN_SPLIT',  5],
+  ['MOUNTAIN_SPLIT',  8],
   ['TRAIN_CROSSING',  5],
   ['CANYON',          5],
   ['BRIDGE',          4],
@@ -848,6 +848,30 @@ export function generateMap(opts = {}) {
 
     chunks.push(chunk);
     prevType = type;
+  }
+
+  // Guarantee at least one MOUNTAIN_SPLIT shows up in the early/mid course.
+  // The weighted picker can occasionally produce a map with no splits at all
+  // (or push the first one past 800 m), and players expect to encounter the
+  // fork high-rise. If none is present in the 200-650 m range, convert a
+  // suitable OPEN_SNOW chunk in that window into a MOUNTAIN_SPLIT.
+  const earlySplits = chunks.filter(
+    c => c.type === 'MOUNTAIN_SPLIT' && c.startZ >= 200 && c.startZ < 650,
+  );
+  if (earlySplits.length === 0) {
+    for (const ch of chunks) {
+      if (ch.startZ < 250 || ch.startZ > 600) continue;
+      if (ch.type !== 'OPEN_SNOW') continue;
+      ch.type = 'MOUNTAIN_SPLIT';
+      const payload = genMountainSplit(rng, ch);
+      ch.obstacles = payload.obstacles;
+      ch.scenery = payload.scenery;
+      ch.collectibles = payload.collectibles;
+      ch.specialFeatures = payload.specialFeatures;
+      const splitFeat = payload.specialFeatures.find(f => f.type === 'mountain_split');
+      if (splitFeat) ch.paths = splitFeat.paths;
+      break;
+    }
   }
 
   // Milestones: biome thresholds + halfway
