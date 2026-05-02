@@ -4,7 +4,8 @@ export default defineConfig({
   root: '.',
   publicDir: 'public',
   server: {
-    port: 3000,
+    port: 3002,
+    host: '0.0.0.0',
     open: true,
   },
   build: {
