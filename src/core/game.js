@@ -174,6 +174,8 @@ export class Game {
       coin: new Audio('/audio/coin.mp3'),
       crash: new Audio('/audio/crash.mp3'),
       ramp: new Audio('/audio/ramp.mp3'),
+      closeCall: new Audio('/audio/close-call.mp3'),
+      closeDrone: new Audio('/audio/close-drone.mp3'),
     };
     Object.values(this.sfx).forEach(audio => {
       audio.preload = 'auto';
@@ -188,6 +190,7 @@ export class Game {
     this._loadAudioBuffer('/audio/snow-slide.mp3').then(buffer => {
       this.slideBuffer = buffer;
     }).catch(() => {});
+    this.closeCallCooldown = 0;
     // Manual-loop fallback for browsers where the `loop` flag misbehaves
     this.bgMusic.addEventListener('ended', () => {
       if (this._musicShouldPlay) {
@@ -326,6 +329,22 @@ export class Game {
       this.currentYahooAudio.currentTime = 0;
       this.currentYahooAudio = null;
     }
+  }
+
+  _playCloseCallSound() {
+    if (!this.sfx || !this.sfx.closeCall) return;
+    const audio = this.sfx.closeCall.cloneNode();
+    audio.volume = 0.8;
+    const playPromise = audio.play();
+    if (playPromise && playPromise.catch) playPromise.catch(() => {});
+  }
+
+  _playCloseDroneSound() {
+    if (!this.sfx || !this.sfx.closeDrone) return;
+    const audio = this.sfx.closeDrone.cloneNode();
+    audio.volume = 1;
+    const playPromise = audio.play();
+    if (playPromise && playPromise.catch) playPromise.catch(() => {});
   }
 
   _playYahooSound() {
@@ -3215,6 +3234,12 @@ export class Game {
         const dzCar = Math.abs(carWorldZ - pz);
         const halfL = (car.userData.length || 3.0) / 2 + 0.3;
         const halfW = (car.userData.width  || 1.7) / 2 + 0.3;
+        // Close call sound
+        const closeThreshold = 10;
+        if (dxCar < halfL + closeThreshold && dzCar < halfW + closeThreshold && this.closeCallCooldown <= 0) {
+          this._playCloseCallSound();
+          this.closeCallCooldown = 2;
+        }
         if (dxCar < halfL && dzCar < halfW) {
           // Touching the top? Slide across instead of dying.
           const top = car.userData.height || 1.5;
@@ -4345,6 +4370,12 @@ export class Game {
       const dx = d.position.x - px;
       const dy = d.position.y - py;
       const dz = d.position.z - pz;
+      // Close call for drones
+      const closeThreshold = 10;
+      if (dx * dx + dy * dy + dz * dz < closeThreshold * closeThreshold && this.closeCallCooldown <= 0) {
+        this._playCloseDroneSound();
+        this.closeCallCooldown = 2;
+      }
       if (dx * dx + dy * dy + dz * dz < 1.3 * 1.3) return 'drone';
     }
     // Balloons (still tracked in skyObjects)
@@ -4371,6 +4402,7 @@ export class Game {
       if (playPromise && playPromise.catch) playPromise.catch(() => {});
     }
     this._setSlideSoundVolume(0); // Stop snow-slide on crash
+    this._stopRampSound(); // Stop ramp sound on crash
     // Plant a flag at the death spot showing the distance reached
     this._placeDeathFlag(position, this.distance);
     this._explode(position.clone(), hitType || 'car');
@@ -5147,6 +5179,7 @@ export class Game {
       this._resumeAudioContext();
     }
     this._setSlideSoundVolume(slideIntensity);
+    this.closeCallCooldown = Math.max(0, this.closeCallCooldown - delta);
     this._playerXVelocity = (this.playerX - prevX) / Math.max(0.001, delta);
 
     // Tilt slightly in the direction of motion; lerp back to upright when idle.
