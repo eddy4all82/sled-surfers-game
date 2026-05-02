@@ -4054,11 +4054,16 @@ export class Game {
     const py = this.player.position.y;
     const pz = this.player.position.z;
     if (py <= 0.5) return null;
+    // Phase 3 perf: cheap squared-distance early-outs on Z (cheapest axis
+    // since most hazards spawn far ahead). Each loop bails on the FIRST
+    // axis-distance check before doing any 3D distance math.
 
     for (const r of this.rockets) {
-      const dx = r.position.x - px;
-      const dy = r.position.y - py;
       const dz = r.position.z - pz;
+      if (dz > 1.7 || dz < -1.7) continue;
+      const dx = r.position.x - px;
+      if (dx > 1.7 || dx < -1.7) continue;
+      const dy = r.position.y - py;
       if (dx * dx + dy * dy + dz * dz < 1.7 * 1.7) return 'rocket';
     }
     for (const p of this.lowPassPlanes) {
@@ -4068,17 +4073,21 @@ export class Game {
       if (dx < 5 && dy < 1.5) return 'airplane';
     }
     for (const d of this.drones) {
-      const dx = d.position.x - px;
-      const dy = d.position.y - py;
       const dz = d.position.z - pz;
+      if (dz > 1.3 || dz < -1.3) continue;
+      const dx = d.position.x - px;
+      if (dx > 1.3 || dx < -1.3) continue;
+      const dy = d.position.y - py;
       if (dx * dx + dy * dy + dz * dz < 1.3 * 1.3) return 'drone';
     }
     // Balloons (still tracked in skyObjects)
     for (const obj of this.skyObjects) {
       if (obj.userData.skyKind !== 'balloon') continue;
-      const dx = obj.position.x - px;
-      const dy = obj.position.y - py;
       const dz = obj.position.z - pz;
+      if (dz > 2 || dz < -2) continue;
+      const dx = obj.position.x - px;
+      if (dx > 2 || dx < -2) continue;
+      const dy = obj.position.y - py;
       if (dx * dx + dy * dy + dz * dz < 2.0 * 2.0) return 'balloon';
     }
     return null;
@@ -5253,11 +5262,21 @@ export class Game {
   _checkCollisions() {
     const px = this.player.position.x;
     const py = this.player.position.y;
+    // Phase 3 perf: world scrolls so the player is fixed at z=0. Anything
+    // beyond ±NEAR_Z can't possibly overlap. Skip the iteration body for
+    // far objects with a single Math.abs compare at the top of each loop.
+    const NEAR_Z = 8;
+    // If the player is high enough above all ground props (cars, rocks,
+    // tall lamps, ramps, ~6 m max prop height) we can skip ground checks
+    // entirely. Air-time + ramp arc fly safely above everything except
+    // mountain-split high-rises and aerial hazards.
+    const aboveGround = py > 8 && !this.isJumping;
 
     // Ramp hit — launch the player. Player is at z=0; the ramp is at
     // ramp.position.z and extends ±length/2 in Z. Trigger as soon as the
     // player overlaps the ramp footprint within ±1.5 in X.
-    for (const ramp of this.ramps) {
+    if (!aboveGround) for (const ramp of this.ramps) {
+      if (Math.abs(ramp.position.z) > NEAR_Z + 6) continue;  // far → skip
       const halfL = (ramp.userData.length || 10) / 2;
       const insideZ = Math.abs(ramp.position.z) <= halfL + 0.5;
       const dx = Math.abs(ramp.position.x - px);
@@ -5275,6 +5294,10 @@ export class Game {
     if (this.mountainBlocks) {
       for (const block of this.mountainBlocks) {
         if (block.userData.kind !== 'building') continue;
+        // Phase 3 perf: skip if the building's CENTER is far away. Use the
+        // building length (≈25) as the near-window so we don't skip while
+        // the player is approaching its front wall.
+        if (Math.abs(block.position.z) > NEAR_Z + 14) continue;
         const halfL = (block.userData.length || 25) / 2;
         const halfW = (block.userData.width  || 6) / 2;
         const dz = block.position.z;
@@ -5346,9 +5369,11 @@ export class Game {
     // read visually, snap playerY up to the obstacle's roof while overlapping
     // — the player rides the surface and falls back off the back.
     // A side hit (coming in below the roof minus the margin) still kills.
-    if (!this.airborneFromRamp) {
+    if (!this.airborneFromRamp && !aboveGround) {
       let onTopOfSomething = false;
       for (const obs of this.obstacles) {
+        // Phase 3 perf: cheap Z-distance early-out before any other math.
+        if (Math.abs(obs.position.z) > NEAR_Z) continue;
         const halfL = (obs.userData.length || 2.5) / 2 + 0.6;
         const halfW = (obs.userData.width  || 1.0) / 2 + 0.5;
         const top   = (obs.userData.height || 1.5);
@@ -5377,12 +5402,13 @@ export class Game {
       this._ridingObstacle = onTopOfSomething;
     }
 
-    // Coin collection
+    // Coin collection — Phase 3 perf: check Z FIRST (cheapest); coin
+    // collection radius is 1.5, so anything past ±2 can't be picked up.
     for (const coin of this.collectibles) {
       if (coin.userData.collected) continue;
       const dz = Math.abs(coin.position.z);
+      if (dz > 2) continue;
       const dx = Math.abs(coin.position.x - px);
-
       if (dz < 1.5 && dx < 1.5) {
         coin.userData.collected = true;
         coin.visible = false;
