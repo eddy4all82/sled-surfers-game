@@ -52,6 +52,7 @@ class Game {
     this.playerY = 0;
     this.velY = 0;
     this.speed = 17;
+    this.grounded = true;
     this.dropCount = 0;
     this.lastPlatform = 0;
     this.running = false;
@@ -351,6 +352,7 @@ class Game {
     this.startBtn.addEventListener('click', () => {
       this.running = true;
       this.startPanel.style.display = 'none';
+      document.body.classList.add('playing');
     });
     addEventListener('keydown', e => {
       this.keys.add(e.key.toLowerCase());
