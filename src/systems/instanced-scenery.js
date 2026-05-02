@@ -166,67 +166,85 @@ export class InstancedScenery {
     pool.free.push(idx);
   }
 
+  // World→local Z conversion. Callers always pass WORLD z (the scroll offset
+  // is handled here) so they don't need to know about the root translate.
+  _localZ(worldZ) { return worldZ - this.root.position.z; }
+
   // ── Pine tree ────────────────────────────────────────────
-  addPine(x, z, opts = {}) {
+  addPine(x, worldZ, opts = {}) {
     const biome = opts.biome || 'snow';
     const scale = opts.scale != null ? opts.scale : (0.9 + Math.random() * 0.35);
     const rotY  = opts.rotY  != null ? opts.rotY  : (Math.random() * Math.PI * 2);
-    const idx = this._claim(this.pine);
+    const idx   = this._claim(this.pine);
+    this._writePine(idx, x, this._localZ(worldZ), biome, scale, rotY);
+    return { kind: 'pine', idx };
+  }
 
-    // Trunk: y=0.75, scale full
-    _e.set(0, rotY, 0); _q.setFromEuler(_e);
-    _v.set(x, 0.75 * scale, z);
-    _s.set(scale, scale, scale);
-    _m.compose(_v, _q, _s);
+  // ── Palm tree ────────────────────────────────────────────
+  addPalm(x, worldZ /* opts */) {
+    const idx = this._claim(this.palm);
+    this._writePalm(idx, x, this._localZ(worldZ));
+    return { kind: 'palm', idx };
+  }
+
+  // ── Street lamp ──────────────────────────────────────────
+  addLamp(x, worldZ) {
+    const idx = this._claim(this.lamp);
+    this._writeLamp(idx, x, this._localZ(worldZ));
+    return { kind: 'lamp', idx };
+  }
+
+  // Reposition an existing handle in place — no slot churn, no allocation.
+  // Just rewrites the matrices for the same instance index. Phase 2: pure
+  // pool reuse, zero GC pressure on recycle.
+  moveHandle(handle, x, worldZ, opts = {}) {
+    if (!handle || handle.idx == null) return;
+    const z = this._localZ(worldZ);
+    if (handle.kind === 'pine') {
+      this._writePine(handle.idx, x, z, opts.biome || 'snow',
+        opts.scale != null ? opts.scale : (0.9 + Math.random() * 0.35),
+        opts.rotY  != null ? opts.rotY  : (Math.random() * Math.PI * 2));
+    } else if (handle.kind === 'palm') {
+      this._writePalm(handle.idx, x, z);
+    } else if (handle.kind === 'lamp') {
+      this._writeLamp(handle.idx, x, z);
+    }
+  }
+
+  // ── Internal matrix writers — single source of truth used by add* (new
+  // slot) and moveHandle (existing slot). ───────────────────────────
+  _writePine(idx, x, z, biome, scale, rotY) {
+    _e.set(0, rotY, 0); _q.setFromEuler(_e); _s.set(scale, scale, scale);
+    _v.set(x, 0.75 * scale, z); _m.compose(_v, _q, _s);
     this.pine.trunk.setMatrixAt(idx, _m);
-
-    // Foliage layers + (snow) caps. Y values match _addPineTree's original
-    // 3-layer geometry (always 3 here so the InstancedMesh count is fixed).
     const layerYs = [2.2, 3.05, 3.7];
     const foliage = [this.pine.foliage1, this.pine.foliage2, this.pine.foliage3];
     const snows   = [this.pine.snow1,    this.pine.snow2,    this.pine.snow3];
     for (let i = 0; i < 3; i++) {
-      _v.set(x, layerYs[i] * scale, z);
-      _m.compose(_v, _q, _s);
+      _v.set(x, layerYs[i] * scale, z); _m.compose(_v, _q, _s);
       foliage[i].setMatrixAt(idx, _m);
       if (biome === 'snow') {
-        _v.set(x, (layerYs[i] + 0.18) * scale, z);
-        _m.compose(_v, _q, _s);
+        _v.set(x, (layerYs[i] + 0.18) * scale, z); _m.compose(_v, _q, _s);
         snows[i].setMatrixAt(idx, _m);
       } else {
         snows[i].setMatrixAt(idx, HIDE_MATRIX);
       }
     }
-
     this.pine.trunk.instanceMatrix.needsUpdate = true;
     foliage.forEach((m) => { m.instanceMatrix.needsUpdate = true; });
     snows.forEach((m)   => { m.instanceMatrix.needsUpdate = true; });
-    return { kind: 'pine', idx };
   }
-
-  // ── Palm tree ────────────────────────────────────────────
-  addPalm(x, z, opts = {}) {
-    const idx = this._claim(this.palm);
+  _writePalm(idx, x, z) {
     const trunkH = 5 + Math.random() * 1.2;
     const leanRad = (12 + Math.random() * 8) * Math.PI / 180;
     const leanAxis = Math.random() < 0.5 ? -1 : 1;
     const rotY = Math.random() * Math.PI * 2;
-
-    // The trunk leans in Z by leanRad×leanAxis (set on a tilt pivot in the
-    // original); we bake that lean directly into each instance's quaternion.
-    _e.set(0, rotY, leanAxis * leanRad);
-    _q.setFromEuler(_e);
-    _v.set(x, trunkH / 2, z);
-    _s.set(1, trunkH / 5.5, 1);    // scale Y to match per-tree trunkH
-    _m.compose(_v, _q, _s);
+    _e.set(0, rotY, leanAxis * leanRad); _q.setFromEuler(_e);
+    _v.set(x, trunkH / 2, z); _s.set(1, trunkH / 5.5, 1); _m.compose(_v, _q, _s);
     this.palm.trunk.setMatrixAt(idx, _m);
-
-    // Crown of 5 fronds at trunk top, fanning around Y.
     const topY = trunkH;
     for (let i = 0; i < 5; i++) {
       const angle = (i / 5) * Math.PI * 2 + (Math.random() - 0.5) * 0.3;
-      // Compose: lean the parent, then rotateY(angle), then rotateX(-1.0).
-      // Easier: build the rotation as a chained matrix.
       const local = new THREE.Matrix4();
       const tilt  = new THREE.Matrix4().makeRotationZ(leanAxis * leanRad);
       const yaw   = new THREE.Matrix4().makeRotationY(angle);
@@ -235,57 +253,28 @@ export class InstancedScenery {
       local.copy(trans).multiply(tilt).multiply(yaw).multiply(pitch);
       this.palm.fronds[i].setMatrixAt(idx, local);
     }
-
-    // Three coconuts at the crown — three coconut indices per palm slot.
     for (let i = 0; i < 3; i++) {
       const a = (i / 3) * Math.PI * 2;
       _v.set(x + Math.cos(a) * 0.22, topY - 0.05, z + Math.sin(a) * 0.22);
-      _e.set(0, 0, 0); _q.setFromEuler(_e);
-      _s.set(1, 1, 1);
+      _e.set(0, 0, 0); _q.setFromEuler(_e); _s.set(1, 1, 1);
       _m.compose(_v, _q, _s);
       this.palm.coconut.setMatrixAt(idx * 3 + i, _m);
     }
-
     this.palm.trunk.instanceMatrix.needsUpdate = true;
     this.palm.coconut.instanceMatrix.needsUpdate = true;
     this.palm.fronds.forEach((m) => { m.instanceMatrix.needsUpdate = true; });
-    return { kind: 'palm', idx };
   }
-
-  // ── Street lamp ──────────────────────────────────────────
-  addLamp(x, z) {
-    const idx = this._claim(this.lamp);
+  _writeLamp(idx, x, z) {
     const reachSign = x < 0 ? 1 : -1;
-
     _e.set(0, 0, 0); _q.setFromEuler(_e); _s.set(1, 1, 1);
     _v.set(x, 0.125, z); _m.compose(_v, _q, _s); this.lamp.base.setMatrixAt(idx, _m);
     _v.set(x, 2.0,   z); _m.compose(_v, _q, _s); this.lamp.pole.setMatrixAt(idx, _m);
     _v.set(x + reachSign * 0.4, 3.95, z); _m.compose(_v, _q, _s); this.lamp.arm.setMatrixAt(idx, _m);
     _v.set(x + reachSign * 0.7, 3.85, z); _m.compose(_v, _q, _s); this.lamp.head.setMatrixAt(idx, _m);
-
     this.lamp.base.instanceMatrix.needsUpdate = true;
     this.lamp.pole.instanceMatrix.needsUpdate = true;
     this.lamp.arm.instanceMatrix.needsUpdate  = true;
     this.lamp.head.instanceMatrix.needsUpdate = true;
-    return { kind: 'lamp', idx };
-  }
-
-  // ── Move an existing handle to (x, z) — used by recycle. ─
-  moveHandle(handle, x, z, opts = {}) {
-    if (!handle) return;
-    if (handle.kind === 'pine') {
-      this._release(this.pine, handle.idx, (i) => this._hidePine(i));
-      const h = this.addPine(x, z, opts);
-      handle.idx = h.idx;
-    } else if (handle.kind === 'palm') {
-      this._release(this.palm, handle.idx, (i) => this._hidePalm(i));
-      const h = this.addPalm(x, z, opts);
-      handle.idx = h.idx;
-    } else if (handle.kind === 'lamp') {
-      this._release(this.lamp, handle.idx, (i) => this._hideLamp(i));
-      const h = this.addLamp(x, z);
-      handle.idx = h.idx;
-    }
   }
 
   // ── Release a handle (instance hidden, slot pooled) ──────

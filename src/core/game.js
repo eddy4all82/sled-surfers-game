@@ -5606,22 +5606,24 @@ export class Game {
       }
     });
 
-    // Recycle scenery — when scenery passes behind us, replace it with a fresh
-    // instance matching the *current* biome rather than just teleporting it.
-    for (let i = this.scenery.length - 1; i >= 0; i--) {
+    // Phase 2 perf: pure pool reuse. Scenery items are NEVER removed,
+    // disposed, or re-created during gameplay — they're just teleported
+    // forward in place. For instanced markers (pine/palm/lamp), the
+    // InstancedMesh matrix is rewritten via moveHandle. For non-instanced
+    // groups (cabin/mid-rise/cliff/etc) the Object3D itself moves.
+    for (let i = 0; i < this.scenery.length; i++) {
       const s = this.scenery[i];
       if (s.position.z < -30) {
-        const side = s.position.x < 0 ? -1 : 1;
-        const newZ = s.position.z + 400 + Math.random() * 8;
-        // Phase 1 perf: instanced markers don't live in the scene graph.
-        // Their geometry is owned by InstancedScenery — release the slot.
-        if (s.userData && typeof s.userData.releaseInstance === 'function') {
-          s.userData.releaseInstance();
-        } else {
-          this.scene.remove(s);
+        const newWorldZ = s.position.z + 400 + Math.random() * 8;
+        const handle = s.userData && s.userData.instanceHandle;
+        if (handle && this.instancedScenery) {
+          this.instancedScenery.moveHandle(handle, s.position.x, newWorldZ, {
+            biome: s.userData.biome || this.currentBiome,
+          });
         }
-        this.scenery.splice(i, 1);
-        this._addSideDecor(side, newZ, this.currentBiome);
+        // Both the marker AND the real-mesh Group track the recycle anchor
+        // in .position.z. Bumping it forward = scenery now sits ahead.
+        s.position.z = newWorldZ;
       }
     }
   }
