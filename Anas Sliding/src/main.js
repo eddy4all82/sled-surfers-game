@@ -107,7 +107,7 @@ class Game {
       const kind = this._kind(i);
       this._platform(i, z, y, kind);
       this.platforms.push({ start: z, end: z + COURSE.platform, y, index: i });
-      this._gap(z + COURSE.platform, y, y - COURSE.drop, kind);
+      this._gap(z + COURSE.platform, y, y - COURSE.drop, kind, i);
       z += COURSE.platform + COURSE.gap;
     }
     this.finish = z - COURSE.gap;
@@ -148,24 +148,36 @@ class Game {
     this.scene.add(group);
   }
 
-  _gap(startZ, topY, lowerY, kind) {
+  _gap(startZ, topY, lowerY, kind, index) {
     const z = startZ + COURSE.gap / 2;
     const slopeAngle = Math.atan2(topY - lowerY, COURSE.gap);
+    const mode = index % 3 === 1 ? 'jump' : 'slide';
     const lip = new THREE.Mesh(new THREE.BoxGeometry(COURSE.width, 0.12, 0.8), this.mat.roof);
     lip.position.set(0, topY + 0.05, startZ - 0.15);
     this.scene.add(lip);
 
-    const slope = new THREE.Mesh(new THREE.BoxGeometry(COURSE.width * 0.82, 0.34, COURSE.gap + 1), this.mat.packed);
-    slope.position.set(0, (topY + lowerY) / 2 - 0.08, z);
-    slope.rotation.x = slopeAngle;
-    slope.receiveShadow = true;
-    this.scene.add(slope);
+    if (mode === 'jump') {
+      const kicker = new THREE.Mesh(new THREE.BoxGeometry(COURSE.width * 0.72, 0.55, 4.6), this.mat.snow);
+      kicker.position.set(0, topY + 0.16, startZ - 1.8);
+      kicker.rotation.x = -0.24;
+      this.scene.add(kicker);
 
-    for (const sx of [-COURSE.width * 0.47, COURSE.width * 0.47]) {
-      const bank = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.28, COURSE.gap), this.mat.roof);
-      bank.position.set(sx, (topY + lowerY) / 2 + 0.05, z);
-      bank.rotation.x = slopeAngle;
-      this.scene.add(bank);
+      const lowerPad = new THREE.Mesh(new THREE.BoxGeometry(COURSE.width * 0.76, 0.34, 5.2), this.mat.packed);
+      lowerPad.position.set(0, lowerY + 0.06, startZ + COURSE.gap - 2.6);
+      this.scene.add(lowerPad);
+    } else {
+      const slope = new THREE.Mesh(new THREE.BoxGeometry(COURSE.width * 0.82, 0.34, COURSE.gap + 1), this.mat.packed);
+      slope.position.set(0, (topY + lowerY) / 2 - 0.08, z);
+      slope.rotation.x = slopeAngle;
+      slope.receiveShadow = true;
+      this.scene.add(slope);
+
+      for (const sx of [-COURSE.width * 0.47, COURSE.width * 0.47]) {
+        const bank = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.28, COURSE.gap), this.mat.roof);
+        bank.position.set(sx, (topY + lowerY) / 2 + 0.05, z);
+        bank.rotation.x = slopeAngle;
+        this.scene.add(bank);
+      }
     }
 
     const rows = Math.max(5, Math.floor(COURSE.gap / 9));
@@ -174,7 +186,7 @@ class Game {
       const rowZ = startZ + t * COURSE.gap;
       const rowY = THREE.MathUtils.lerp(topY, lowerY, t);
       for (const side of [-1, 1]) {
-        const nearTrack = Math.random() < 0.35;
+        const nearTrack = mode === 'slide' && Math.random() < 0.35;
         const x = side * (nearTrack ? 8 + Math.random() * 3.3 : 14 + Math.random() * 9);
         const tree = this._tree(0.9 + Math.random() * 0.6);
         tree.position.set(x, rowY + 0.02, rowZ + (Math.random() - 0.5) * 4);
@@ -192,7 +204,9 @@ class Game {
     landing.position.set(0, lowerY - 0.22, startZ + COURSE.gap - 1.6);
     this.scene.add(landing);
 
-    this.slopes.push({ start: startZ, end: startZ + COURSE.gap, topY, lowerY });
+    if (mode === 'slide') {
+      this.slopes.push({ start: startZ, end: startZ + COURSE.gap, topY, lowerY });
+    }
   }
 
   _sideCity(group, index, kind) {
