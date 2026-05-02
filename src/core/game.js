@@ -3232,6 +3232,8 @@ export class Game {
   }
 
   _spawnSkyObject(type, opts = {}) {
+    // Phase 4 perf: hard cap so the sky never hosts more than 6 props.
+    if (this.skyObjects.length >= 6) return;
     const far = opts.far !== undefined ? opts.far : Math.random() < 0.5;
     const low = !!opts.low;
     const flyby = !!opts.flyby;
@@ -3941,6 +3943,8 @@ export class Game {
   }
 
   _spawnDrone(z) {
+    // Phase 4 perf: hard cap so a long run never piles drones up.
+    if (this.drones.length >= 4) return;
     const drone = this._buildDrone();
     drone.position.set(
       (Math.random() - 0.5) * 8,
@@ -5132,81 +5136,110 @@ export class Game {
     }
   }
 
-  _spawnConfetti(originZ) {
-    const COUNT = 220;
+  // Phase 4 perf: confetti pool — one InstancedMesh, 80 slots (was 220
+  // individual Mesh+Geometry+Material). Each particle just rewrites its
+  // slot matrix per frame; one draw call total instead of ~220.
+  _ensureConfettiPool() {
+    if (this._confettiPool) return;
+    const MAX = 80;
+    const geo = new THREE.PlaneGeometry(0.22, 0.14);
+    const mat = new THREE.MeshStandardMaterial({
+      side: THREE.DoubleSide, vertexColors: false, roughness: 0.7,
+    });
+    const mesh = new THREE.InstancedMesh(geo, mat, MAX);
+    mesh.frustumCulled = false;
+    // Color each slot once at construction; varying via setColorAt.
     const colors = [0xff3030, 0x4cc6ff, 0xffd23f, 0x35d24a, 0xffffff, 0xff8a3c, 0xa06cd5];
-    for (let i = 0; i < COUNT; i++) {
-      const color = colors[Math.floor(Math.random() * colors.length)];
-      const mat = new THREE.MeshStandardMaterial({
-        color, side: THREE.DoubleSide, transparent: true, opacity: 1, roughness: 0.7,
-      });
-      const w = 0.18 + Math.random() * 0.18;
-      const h = 0.10 + Math.random() * 0.10;
-      const piece = new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat);
-      piece.position.set(
-        (Math.random() - 0.5) * 6,
-        2 + Math.random() * 2,
-        (originZ != null ? originZ : 0) + (Math.random() - 0.5) * 4,
-      );
-      piece.rotation.set(Math.random() * 6, Math.random() * 6, Math.random() * 6);
-      const v = new THREE.Vector3(
-        (Math.random() - 0.5) * 6,
-        8 + Math.random() * 8,            // shoot upward
-        (Math.random() - 0.5) * 6,
-      );
-      const av = new THREE.Vector3(
-        (Math.random() - 0.5) * 8,
-        (Math.random() - 0.5) * 8,
-        (Math.random() - 0.5) * 8,
-      );
-      this.scene.add(piece);
-      this.confetti.push({
-        mesh: piece, velocity: v, angularVelocity: av,
+    const c = new THREE.Color();
+    for (let i = 0; i < MAX; i++) {
+      c.setHex(colors[i % colors.length]);
+      mesh.setColorAt(i, c);
+      mesh.setMatrixAt(i, new THREE.Matrix4().makeTranslation(0, -10000, 0));
+    }
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    mesh.instanceMatrix.needsUpdate = true;
+    this.scene.add(mesh);
+    this._confettiPool = { mesh, MAX };
+  }
+
+  _spawnConfetti(originZ) {
+    this._ensureConfettiPool();
+    const MAX = this._confettiPool.MAX;
+    const startZ = originZ != null ? originZ : 0;
+    for (let i = 0; i < MAX; i++) {
+      // Reuse any free slot; otherwise overwrite the oldest.
+      if (this.confetti[i] && this.confetti[i].life > 0) continue;
+      this.confetti[i] = {
+        slot: i,
+        x: (Math.random() - 0.5) * 6,
+        y: 2 + Math.random() * 2,
+        z: startZ + (Math.random() - 0.5) * 4,
+        rx: Math.random() * 6, ry: Math.random() * 6, rz: Math.random() * 6,
+        vx: (Math.random() - 0.5) * 6,
+        vy: 8 + Math.random() * 8,
+        vz: (Math.random() - 0.5) * 6,
+        avx: (Math.random() - 0.5) * 8,
+        avy: (Math.random() - 0.5) * 8,
+        avz: (Math.random() - 0.5) * 8,
         life: 4.0 + Math.random() * 2,
         maxLife: 4.0 + Math.random() * 2,
         gravity: 9.8,
         drift: (Math.random() - 0.5) * 1.5,
-      });
+      };
     }
   }
 
   _updateConfetti(delta) {
-    if (!this.confetti || this.confetti.length === 0) return;
-    for (let i = this.confetti.length - 1; i >= 0; i--) {
+    if (!this.confetti || this.confetti.length === 0 || !this._confettiPool) return;
+    const pool = this._confettiPool;
+    const tmpM = new THREE.Matrix4();
+    const tmpQ = new THREE.Quaternion();
+    const tmpE = new THREE.Euler();
+    const tmpV = new THREE.Vector3();
+    const tmpS = new THREE.Vector3();
+    let dirty = false;
+    for (let i = 0; i < this.confetti.length; i++) {
       const p = this.confetti[i];
+      if (!p) continue;
+      if (p.life <= 0) continue;
       p.life -= delta;
       if (p.life <= 0) {
-        this.scene.remove(p.mesh);
-        if (p.mesh.geometry) p.mesh.geometry.dispose();
-        if (p.mesh.material) p.mesh.material.dispose();
-        this.confetti.splice(i, 1);
+        // Hide the slot instead of allocating
+        tmpM.makeTranslation(0, -10000, 0);
+        pool.mesh.setMatrixAt(p.slot, tmpM);
+        dirty = true;
         continue;
       }
-      p.velocity.y -= p.gravity * delta;
-      p.velocity.x += p.drift * delta;
-      p.mesh.position.x += p.velocity.x * delta;
-      p.mesh.position.y += p.velocity.y * delta;
-      p.mesh.position.z += p.velocity.z * delta;
-      p.mesh.rotation.x += p.angularVelocity.x * delta;
-      p.mesh.rotation.y += p.angularVelocity.y * delta;
-      p.mesh.rotation.z += p.angularVelocity.z * delta;
-      if (p.mesh.position.y < 0.05) {
-        p.mesh.position.y = 0.05;
-        p.velocity.y *= -0.25;
-        p.velocity.x *= 0.8;
-        p.velocity.z *= 0.8;
+      p.vy -= p.gravity * delta;
+      p.vx += p.drift * delta;
+      p.x += p.vx * delta; p.y += p.vy * delta; p.z += p.vz * delta;
+      p.rx += p.avx * delta; p.ry += p.avy * delta; p.rz += p.avz * delta;
+      if (p.y < 0.05) {
+        p.y = 0.05;
+        p.vy *= -0.25; p.vx *= 0.8; p.vz *= 0.8;
       }
+      // Fade by SCALING DOWN over the last 25 % of life (no per-particle
+      // material — opacity is fixed on the shared material).
       const t = p.life / p.maxLife;
-      if (p.mesh.material) p.mesh.material.opacity = Math.max(0, t);
+      const scale = t > 0.25 ? 1 : (t / 0.25);
+      tmpE.set(p.rx, p.ry, p.rz); tmpQ.setFromEuler(tmpE);
+      tmpV.set(p.x, p.y, p.z);
+      tmpS.set(scale, scale, scale);
+      tmpM.compose(tmpV, tmpQ, tmpS);
+      pool.mesh.setMatrixAt(p.slot, tmpM);
+      dirty = true;
     }
+    if (dirty) pool.mesh.instanceMatrix.needsUpdate = true;
   }
 
   _clearConfetti() {
     if (!this.confetti) return;
-    for (const p of this.confetti) {
-      this.scene.remove(p.mesh);
-      if (p.mesh.geometry) p.mesh.geometry.dispose();
-      if (p.mesh.material) p.mesh.material.dispose();
+    if (this._confettiPool) {
+      const tmpM = new THREE.Matrix4().makeTranslation(0, -10000, 0);
+      for (let i = 0; i < this._confettiPool.MAX; i++) {
+        this._confettiPool.mesh.setMatrixAt(i, tmpM);
+      }
+      this._confettiPool.mesh.instanceMatrix.needsUpdate = true;
     }
     this.confetti = [];
     this._confettiSpawned = false;
