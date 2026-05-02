@@ -16,10 +16,10 @@ const COLORS = {
 
 const COURSE = {
   width: 26,
-  platform: 96,
-  gap: 18,
-  drop: 4.6,
-  count: 17,
+  platform: 104,
+  gap: 54,
+  drop: 11.5,
+  count: 13,
 };
 
 class Game {
@@ -46,7 +46,7 @@ class Game {
     this.clock = new THREE.Clock();
     this.keys = new Set();
     this.platforms = [];
-    this.drops = [];
+    this.slopes = [];
     this.playerX = 0;
     this.playerZ = 8;
     this.playerY = 0;
@@ -150,22 +150,49 @@ class Game {
 
   _gap(startZ, topY, lowerY, kind) {
     const z = startZ + COURSE.gap / 2;
-    const face = new THREE.Mesh(new THREE.BoxGeometry(COURSE.width, COURSE.drop, 0.8), this.mat.wall);
-    face.position.set(0, lowerY + COURSE.drop / 2 - 0.25, startZ + 0.25);
-    this.scene.add(face);
+    const slopeAngle = Math.atan2(topY - lowerY, COURSE.gap);
     const lip = new THREE.Mesh(new THREE.BoxGeometry(COURSE.width, 0.12, 0.8), this.mat.roof);
     lip.position.set(0, topY + 0.05, startZ - 0.15);
     this.scene.add(lip);
-    if (kind === 'road') this._crossRoad(z, lowerY);
-    else if (kind === 'rail') this._rail(z, lowerY);
-    else if (kind === 'fjord') this._fjord(z, lowerY);
-    else {
-      const ice = new THREE.Mesh(new THREE.PlaneGeometry(COURSE.width * 0.72, COURSE.gap), this.mat.packed);
-      ice.rotation.x = -Math.PI / 2;
-      ice.position.set(0, lowerY + 0.02, z);
-      this.scene.add(ice);
+
+    const slope = new THREE.Mesh(new THREE.BoxGeometry(COURSE.width * 0.82, 0.34, COURSE.gap + 1), this.mat.packed);
+    slope.position.set(0, (topY + lowerY) / 2 - 0.08, z);
+    slope.rotation.x = slopeAngle;
+    slope.receiveShadow = true;
+    this.scene.add(slope);
+
+    for (const sx of [-COURSE.width * 0.47, COURSE.width * 0.47]) {
+      const bank = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.28, COURSE.gap), this.mat.roof);
+      bank.position.set(sx, (topY + lowerY) / 2 + 0.05, z);
+      bank.rotation.x = slopeAngle;
+      this.scene.add(bank);
     }
-    this.drops.push({ z: startZ, lowerY });
+
+    const rows = Math.max(5, Math.floor(COURSE.gap / 9));
+    for (let i = 0; i < rows; i++) {
+      const t = (i + 0.5) / rows;
+      const rowZ = startZ + t * COURSE.gap;
+      const rowY = THREE.MathUtils.lerp(topY, lowerY, t);
+      for (const side of [-1, 1]) {
+        const nearTrack = Math.random() < 0.35;
+        const x = side * (nearTrack ? 8 + Math.random() * 3.3 : 14 + Math.random() * 9);
+        const tree = this._tree(0.9 + Math.random() * 0.6);
+        tree.position.set(x, rowY + 0.02, rowZ + (Math.random() - 0.5) * 4);
+        this.scene.add(tree);
+      }
+    }
+
+    const featureZ = startZ + COURSE.gap * 0.64;
+    const featureY = THREE.MathUtils.lerp(topY, lowerY, 0.64) - 0.08;
+    if (kind === 'road') this._crossRoad(featureZ, featureY);
+    else if (kind === 'rail') this._rail(featureZ, featureY);
+    else if (kind === 'fjord') this._fjord(featureZ, featureY);
+
+    const landing = new THREE.Mesh(new THREE.BoxGeometry(COURSE.width, 0.42, 3.2), this.mat.wall);
+    landing.position.set(0, lowerY - 0.22, startZ + COURSE.gap - 1.6);
+    this.scene.add(landing);
+
+    this.slopes.push({ start: startZ, end: startZ + COURSE.gap, topY, lowerY });
   }
 
   _sideCity(group, index, kind) {
@@ -384,6 +411,15 @@ class Game {
   _groundAt(z) {
     const p = this.platforms.find(item => z >= item.start && z <= item.end);
     if (p) return p;
+    const slope = this.slopes.find(item => z >= item.start && z <= item.end);
+    if (slope) {
+      const t = THREE.MathUtils.clamp((z - slope.start) / (slope.end - slope.start), 0, 1);
+      return {
+        y: THREE.MathUtils.lerp(slope.topY, slope.lowerY, t),
+        index: this.lastPlatform,
+        slope: true,
+      };
+    }
     let lower = this.platforms[0];
     for (const p2 of this.platforms) if (p2.start <= z) lower = p2;
     return lower;
@@ -394,33 +430,35 @@ class Game {
     const steer = (this.keys.has('a') || this.keys.has('arrowleft') ? -1 : 0) + (this.keys.has('d') || this.keys.has('arrowright') ? 1 : 0);
     if (!this.touching) this.playerX += steer * 15 * dt;
     this.playerX = THREE.MathUtils.clamp(this.playerX, -10.5, 10.5);
-    this.speed = Math.min(31, this.speed + 0.75 * dt);
-    this.playerZ += this.speed * dt;
     const ground = this._groundAt(this.playerZ);
+    const slopeBoost = ground.slope ? 7.5 : 0;
+    this.speed = Math.min(38, this.speed + (0.75 + slopeBoost) * dt);
+    this.playerZ += this.speed * dt;
+    const nextGround = this._groundAt(this.playerZ);
     if (!this.grounded) {
       this.velY -= 31 * dt;
       this.playerY += this.velY * dt;
-      if (this.playerY <= ground.y) {
-        this.playerY = ground.y;
+      if (this.playerY <= nextGround.y) {
+        this.playerY = nextGround.y;
         this.velY = 0;
         this.grounded = true;
       }
-    } else if (ground.y < this.playerY - 0.3) {
+    } else if (nextGround.y < this.playerY - 1.4) {
       this.grounded = false;
-      this.velY = -2;
+      this.velY = -1;
     } else {
-      this.playerY += (ground.y - this.playerY) * Math.min(1, 18 * dt);
+      this.playerY += (nextGround.y - this.playerY) * Math.min(1, (nextGround.slope ? 28 : 18) * dt);
     }
-    if (ground.index > this.lastPlatform) {
-      this.dropCount += ground.index - this.lastPlatform;
-      this.lastPlatform = ground.index;
+    if (nextGround.index > this.lastPlatform) {
+      this.dropCount += nextGround.index - this.lastPlatform;
+      this.lastPlatform = nextGround.index;
     }
     this.player.position.set(this.playerX, this.playerY + 0.18, this.playerZ);
     this.player.rotation.z += ((-this.playerX * 0.02) - this.player.rotation.z) * Math.min(1, 8 * dt);
-    this.player.rotation.x = -0.2 + Math.sin(performance.now() * 0.006) * 0.025;
-    this.cam.lerp(new THREE.Vector3(this.playerX * 0.35, this.playerY + 8.5, this.playerZ - 15), Math.min(1, 4.5 * dt));
+    this.player.rotation.x = (nextGround.slope ? -0.45 : -0.2) + Math.sin(performance.now() * 0.006) * 0.025;
+    this.cam.lerp(new THREE.Vector3(this.playerX * 0.35, this.playerY + 10.8, this.playerZ - 20), Math.min(1, 4.5 * dt));
     this.camera.position.copy(this.cam);
-    this.camera.lookAt(this.playerX * 0.18, this.playerY - 1.4, this.playerZ + 34);
+    this.camera.lookAt(this.playerX * 0.18, this.playerY - 3.2, this.playerZ + 46);
     this.distanceEl.textContent = `${Math.floor(this.playerZ)} m`;
     this.speedEl.textContent = `${Math.floor(this.speed * 3.6)} km/h`;
     this.dropsEl.textContent = `${this.dropCount} drops`;
