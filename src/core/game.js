@@ -1353,13 +1353,16 @@ export class Game {
     const sun = new THREE.DirectionalLight(0xffffff, 1.2);
     sun.position.set(20, 40, -10);
     sun.castShadow = true;
-    sun.shadow.mapSize.set(2048, 2048);
+    // Phase 5 perf: 2048→1024 shadow map. Halves the shadow-pass cost
+    // and the visual difference is invisible at this camera distance.
+    sun.shadow.mapSize.set(1024, 1024);
     sun.shadow.camera.near = 1;
-    sun.shadow.camera.far = 100;
-    sun.shadow.camera.left = -30;
-    sun.shadow.camera.right = 30;
-    sun.shadow.camera.top = 30;
-    sun.shadow.camera.bottom = -30;
+    sun.shadow.camera.far = 80;     // tighter far plane, sharper close shadows
+    sun.shadow.camera.left = -25;
+    sun.shadow.camera.right = 25;
+    sun.shadow.camera.top = 25;
+    sun.shadow.camera.bottom = -25;
+    sun.shadow.bias = -0.0008;
     this.scene.add(sun);
 
     // Hemisphere for sky/ground ambient
@@ -1580,8 +1583,10 @@ export class Game {
         (Math.random() - 0.5) * 2.6,
       );
       rock.rotation.y = Math.random() * Math.PI * 2;
-      rock.castShadow = true;
-      rock.receiveShadow = true;
+      // Phase 5 perf: rocks/cliff-chunks are tiny or sit far back; cast
+      // shadows contribute nothing visually at run speed.
+      rock.castShadow = false;
+      rock.receiveShadow = false;
       group.add(rock);
     }
 
@@ -2176,8 +2181,8 @@ export class Game {
         (i - segments / 2) * (d * 0.9) + (Math.random() - 0.5) * 0.5,
       );
       chunk.rotation.y = (Math.random() - 0.5) * 0.4;
-      chunk.castShadow = true;
-      chunk.receiveShadow = true;
+      chunk.castShadow = false;
+      chunk.receiveShadow = false;
       group.add(chunk);
     }
 
@@ -2273,8 +2278,10 @@ export class Game {
         i === 0 ? 0 : (Math.random() - 0.5) * 0.5,
       );
       rock.rotation.y = Math.random() * Math.PI * 2;
-      rock.castShadow = true;
-      rock.receiveShadow = true;
+      // Phase 5 perf: rocks/cliff-chunks are tiny or sit far back; cast
+      // shadows contribute nothing visually at run speed.
+      rock.castShadow = false;
+      rock.receiveShadow = false;
       group.add(rock);
     }
 
@@ -2318,10 +2325,12 @@ export class Game {
       color: s.color, roughness: 0.45, metalness: 0.4,
     });
 
-    // Body
+    // Body — Phase 5 perf: lane vehicles are short and parked; their cast
+    // shadows fold into the ground darkening from the directional sun
+    // and don't add visual signal at run speed.
     const body = new THREE.Mesh(new THREE.BoxGeometry(s.W, s.H, s.L), bodyMat);
     body.position.y = s.H / 2;
-    body.castShadow = true;
+    body.castShadow = false;
     group.add(body);
 
     if (type === 'taxi') {
@@ -2331,7 +2340,7 @@ export class Game {
         new THREE.MeshStandardMaterial({ color: s.cabin.c, roughness: 0.4, metalness: 0.4 }),
       );
       cab.position.set(0, s.H + s.cabin.H / 2, -0.05);
-      cab.castShadow = true;
+      cab.castShadow = false;
       group.add(cab);
       // Windshield strip
       const win = new THREE.Mesh(
@@ -2361,7 +2370,7 @@ export class Game {
         new THREE.MeshStandardMaterial({ color: s.cabin.c, roughness: 0.4 }),
       );
       cab.position.set(0, s.H + s.cabin.H / 2, -0.1);
-      cab.castShadow = true;
+      cab.castShadow = false;
       group.add(cab);
       // Window band
       const win = new THREE.Mesh(
@@ -2384,7 +2393,7 @@ export class Game {
         new THREE.MeshStandardMaterial({ color: s.cabin.c, roughness: 0.4, metalness: 0.4 }),
       );
       cab.position.set(0, s.H + s.cabin.H / 2, -s.L / 2 + s.cabin.L / 2 + 0.02);
-      cab.castShadow = true;
+      cab.castShadow = false;
       group.add(cab);
       // Cargo box in back
       const cargo = new THREE.Mesh(
@@ -2392,7 +2401,7 @@ export class Game {
         new THREE.MeshStandardMaterial({ color: s.cargo.c, roughness: 0.7 }),
       );
       cargo.position.set(0, s.H + s.cargo.H / 2, s.L / 2 - s.cargo.L / 2 - 0.02);
-      cargo.castShadow = true;
+      cargo.castShadow = false;
       group.add(cargo);
       // Cab windshield
       const win = new THREE.Mesh(
@@ -2409,7 +2418,7 @@ export class Game {
         bodyMat,
       );
       tallBody.position.y = (s.H + 0.9) / 2;
-      tallBody.castShadow = true;
+      tallBody.castShadow = false;
       group.add(tallBody);
       // White stripe with window indentations
       const stripeMat = new THREE.MeshStandardMaterial({ color: 0xfafafa, roughness: 0.6 });
@@ -2445,7 +2454,7 @@ export class Game {
         bodyMat,
       );
       tallBody.position.y = (s.H + 0.6) / 2;
-      tallBody.castShadow = true;
+      tallBody.castShadow = false;
       group.add(tallBody);
       // Black stripe along the side
       const stripe = new THREE.Mesh(
@@ -2689,7 +2698,7 @@ export class Game {
       const cabMat = new THREE.MeshStandardMaterial({ color, roughness: 0.4, metalness: 0.5 });
       const cab = new THREE.Mesh(cabGeo, cabMat);
       cab.position.set(0, bodyH + 0.5, -1.5);
-      cab.castShadow = true;
+      cab.castShadow = false;
       group.add(cab);
     }
 
@@ -3878,7 +3887,9 @@ export class Game {
     const armMat = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.7 });
 
     const body = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.2, 0.5), bodyMat);
-    body.castShadow = true;
+    // Phase 5 perf: drone is high above ground and outside the directional
+    // shadow camera frustum — its cast shadow contributes nothing.
+    body.castShadow = false;
     group.add(body);
 
     // Four diagonal arms + rotors
