@@ -1,0 +1,14 @@
+
+> sled-surfers-game@0.1.0 dev
+> vite
+
+
+  VITE v6.4.2  ready in 338 ms
+
+  ➜  Local:   http://localhost:3001/
+  ➜  Network: use --host to expose
+9:33:46 PM [vite] vite.config.js changed, restarting server...
+9:33:46 PM [vite] server restarted.
+
+  ➜  Local:   http://localhost:3001/
+  ➜  Network: http://192.168.86.181:3001/

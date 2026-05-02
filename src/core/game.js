@@ -10,6 +10,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { InputManager } from './input-manager.js';
 import { GAME_CONFIG } from '../utils/constants.js';
 import { generateMap, randomSeed, DEFAULT_COURSE_LENGTH } from '../systems/map-generator.js';
+import { InstancedScenery } from '../systems/instanced-scenery.js';
 
 export class Game {
   constructor() {
@@ -787,6 +788,10 @@ export class Game {
     this._setupScene();
     this._setupCamera();
     this._setupLighting();
+    // Phase 1 perf: pooled InstancedMesh scenery for the high-volume kinds
+    // (pine, palm, lamp). Must be ready BEFORE _createPlaceholderWorld so the
+    // first wave of trees and lamps lands in the instance pools.
+    this.instancedScenery = new InstancedScenery(this.scene);
     this._createPlaceholderWorld();
 
     // Generate the procedural course map (Phase 1) and place the finish line
@@ -1603,64 +1608,18 @@ export class Game {
   }
 
   _addPineTree(x, z, biome) {
-    const group = new THREE.Group();
     biome = biome || this.currentBiome || 'snow';
-
-    // Trunk — original spec: r=0.15, h=1.5
-    const trunk = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.15, 0.18, 1.5, 8),
-      new THREE.MeshStandardMaterial({ color: 0x6b4423, roughness: 0.95 }),
-    );
-    trunk.position.y = 0.75;
-    trunk.castShadow = true;
-    group.add(trunk);
-
-    // 2-3 stacked dark green cones, each smaller than the one below
-    const foliageMat = new THREE.MeshStandardMaterial({
-      color: 0x2d5016, roughness: 0.85,
-    });
-    const snowMat = new THREE.MeshStandardMaterial({
-      color: 0xfafdff, roughness: 0.7,
-    });
-
-    const layerCount = 2 + Math.floor(Math.random() * 2); // 2 or 3
-    let baseY = 1.5;
-    const layers = [];
-    for (let i = 0; i < layerCount; i++) {
-      const r = 1.2 - i * 0.32;
-      const h = 1.4 - i * 0.22;
-      layers.push({ y: baseY + h / 2, r, h });
-      baseY += h * 0.8;
-    }
-    layers.forEach((l) => {
-      const cone = new THREE.Mesh(
-        new THREE.ConeGeometry(l.r, l.h, 8),
-        foliageMat,
-      );
-      cone.position.y = l.y;
-      cone.castShadow = true;
-      group.add(cone);
-
-      // Snow on the outer surface — slightly larger thin cone shell on top
-      if (biome === 'snow') {
-        const snowCap = new THREE.Mesh(
-          new THREE.ConeGeometry(l.r * 1.04, l.h * 0.55, 8, 1, true),
-          snowMat,
-        );
-        snowCap.position.y = l.y + l.h * 0.22;
-        group.add(snowCap);
-      }
-    });
-
-    const scale = 0.9 + Math.random() * 0.35;
-    group.scale.set(scale, scale, scale);
-    group.rotation.y = Math.random() * Math.PI * 2;
-
-    group.position.set(x, 0, z);
-    group.userData.type = 'scenery';
-    group.userData.biome = biome;
-    this.scene.add(group);
-    this.scenery.push(group);
+    // Phase 1 perf: instanced. Returns a marker Group (no real meshes added
+    // to the scene) carrying the instance handle. Recycle path releases
+    // the instance via _disposeObject's userData.releaseInstance hook.
+    const handle = this.instancedScenery.addPine(x, z, { biome });
+    const marker = new THREE.Group();
+    marker.position.set(x, 0, z);
+    marker.userData.type = 'scenery';
+    marker.userData.biome = biome;
+    marker.userData.instanceHandle = handle;
+    marker.userData.releaseInstance = () => this.instancedScenery.release(handle);
+    this.scenery.push(marker);
   }
 
   _addCabin(x, z) {
@@ -1715,93 +1674,25 @@ export class Game {
   }
 
   _addStreetLamp(x, z) {
-    const group = new THREE.Group();
-
-    const baseMat = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.7 });
-    const base = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.22, 0.25, 8), baseMat);
-    base.position.y = 0.125;
-    group.add(base);
-
-    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.09, 4.0, 8), baseMat);
-    pole.position.y = 2.0;
-    pole.castShadow = true;
-    group.add(pole);
-
-    // Arm reaching toward the road
-    const reachSign = x < 0 ? 1 : -1;
-    const arm = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.07, 0.07), baseMat);
-    arm.position.set(reachSign * 0.4, 3.95, 0);
-    group.add(arm);
-
-    // Lamp head
-    const headMat = new THREE.MeshStandardMaterial({
-      color: 0xfff2a8, emissive: 0xffd97a, emissiveIntensity: 0.9, roughness: 0.3,
-    });
-    const head = new THREE.Mesh(new THREE.BoxGeometry(0.45, 0.25, 0.45), headMat);
-    head.position.set(reachSign * 0.7, 3.85, 0);
-    group.add(head);
-
-    group.position.set(x, 0, z);
-    group.userData.type = 'scenery';
-    group.userData.biome = 'city';
-    this.scene.add(group);
-    this.scenery.push(group);
+    const handle = this.instancedScenery.addLamp(x, z);
+    const marker = new THREE.Group();
+    marker.position.set(x, 0, z);
+    marker.userData.type = 'scenery';
+    marker.userData.biome = 'city';
+    marker.userData.instanceHandle = handle;
+    marker.userData.releaseInstance = () => this.instancedScenery.release(handle);
+    this.scenery.push(marker);
   }
 
   _addPalmTree(x, z) {
-    const group = new THREE.Group();
-
-    // Single cylinder trunk leaning ~15°. We attach it to a tilt pivot so the
-    // whole crown leans with the trunk.
-    const tilt = new THREE.Group();
-    const leanRad = (12 + Math.random() * 8) * Math.PI / 180; // 12-20°
-    const leanAxis = Math.random() < 0.5 ? -1 : 1;            // lean left or right
-    tilt.rotation.z = leanAxis * leanRad;
-    group.add(tilt);
-
-    const trunkH = 5 + Math.random() * 1.2;
-    const trunk = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.18, 0.24, trunkH, 8),
-      new THREE.MeshStandardMaterial({ color: 0x8b6a3a, roughness: 0.9 }),
-    );
-    trunk.position.y = trunkH / 2;
-    trunk.castShadow = true;
-    tilt.add(trunk);
-
-    // Crown of 4-6 flat elongated fronds fanning out from the top.
-    const frondCount = 4 + Math.floor(Math.random() * 3);
-    const frondMat = new THREE.MeshStandardMaterial({
-      color: 0x3cb371, roughness: 0.75, side: THREE.DoubleSide,
-    });
-    const topY = trunkH;
-    for (let i = 0; i < frondCount; i++) {
-      const angle = (i / frondCount) * Math.PI * 2 + (Math.random() - 0.5) * 0.3;
-      const frondGeo = new THREE.PlaneGeometry(0.7, 2.6);
-      frondGeo.translate(0, 1.2, 0);
-      const frond = new THREE.Mesh(frondGeo, frondMat);
-      frond.position.set(0, topY, 0);
-      frond.rotation.y = angle;
-      frond.rotation.x = -1.0;
-      frond.rotation.z = (Math.random() - 0.5) * 0.2;
-      frond.castShadow = true;
-      tilt.add(frond);
-    }
-
-    // Cluster of coconuts at the crown
-    const coconutMat = new THREE.MeshStandardMaterial({ color: 0x4a2a14, roughness: 0.6 });
-    for (let i = 0; i < 3; i++) {
-      const c = new THREE.Mesh(new THREE.SphereGeometry(0.14, 8, 8), coconutMat);
-      const a = (i / 3) * Math.PI * 2;
-      c.position.set(Math.cos(a) * 0.22, topY - 0.05, Math.sin(a) * 0.22);
-      tilt.add(c);
-    }
-
-    group.position.set(x, 0, z);
-    group.rotation.y = Math.random() * Math.PI * 2;
-    group.userData.type = 'scenery';
-    group.userData.biome = 'tropical';
-    this.scene.add(group);
-    this.scenery.push(group);
+    const handle = this.instancedScenery.addPalm(x, z);
+    const marker = new THREE.Group();
+    marker.position.set(x, 0, z);
+    marker.userData.type = 'scenery';
+    marker.userData.biome = 'tropical';
+    marker.userData.instanceHandle = handle;
+    marker.userData.releaseInstance = () => this.instancedScenery.release(handle);
+    this.scenery.push(marker);
   }
 
   _addTikiHut(x, z) {
@@ -5198,6 +5089,10 @@ export class Game {
     this.ramps.forEach(r => { r.position.z -= moveZ; });
     this.collectibles.forEach(c => { c.position.z -= moveZ; });
     this.scenery.forEach(s => { s.position.z -= moveZ; });
+    // Phase 1 perf: scroll the instanced-scenery batch root in lockstep
+    // with the marker .position.z values above so trees/lamps move with
+    // the world without per-instance matrix updates.
+    if (this.instancedScenery) this.instancedScenery.scroll(moveZ);
     if (this.finishLineGroup) this.finishLineGroup.position.z -= moveZ;
     if (this.mountainBlocks) {
       for (const m of this.mountainBlocks) m.position.z -= moveZ;
@@ -5718,7 +5613,13 @@ export class Game {
       if (s.position.z < -30) {
         const side = s.position.x < 0 ? -1 : 1;
         const newZ = s.position.z + 400 + Math.random() * 8;
-        this.scene.remove(s);
+        // Phase 1 perf: instanced markers don't live in the scene graph.
+        // Their geometry is owned by InstancedScenery — release the slot.
+        if (s.userData && typeof s.userData.releaseInstance === 'function') {
+          s.userData.releaseInstance();
+        } else {
+          this.scene.remove(s);
+        }
         this.scenery.splice(i, 1);
         this._addSideDecor(side, newZ, this.currentBiome);
       }
