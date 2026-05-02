@@ -17,8 +17,8 @@ const COLORS = {
 const COURSE = {
   width: 26,
   platform: 104,
-  gap: 54,
-  drop: 11.5,
+  gap: 20,
+  drop: 20,
   count: 13,
 };
 
