@@ -165,6 +165,25 @@ export class Game {
     this.bgMusic.volume = 0.55;
     this.bgMusic.preload = 'auto';
     this._musicShouldPlay = false;
+
+    this.sfx = {
+      jump: new Audio('/audio/jump.mp3'),
+      parachute: new Audio('/audio/parachute.mp3'),
+      yahoo: new Audio('/audio/yahoo.mp3'),
+      landing: new Audio('/audio/landing.mp3'),
+      coin: new Audio('/audio/coin.mp3'),
+      crash: new Audio('/audio/crash.mp3'),
+      ramp: new Audio('/audio/ramp.mp3'),
+      slide: new Audio('/audio/snow-slide.mp3'),
+    };
+    Object.values(this.sfx).forEach(audio => {
+      audio.preload = 'auto';
+      audio.load();
+    });
+    this.sfx.slide.loop = true;
+    this.sfx.parachute.loop = true;
+    this.sfx.slide.volume = 0;
+    this._slideSoundActive = false;
     // Manual-loop fallback for browsers where the `loop` flag misbehaves
     this.bgMusic.addEventListener('ended', () => {
       if (this._musicShouldPlay) {
@@ -204,6 +223,137 @@ export class Game {
     }
   }
 
+
+  _ensureAudioContext() {
+    if (this.audioCtx) return;
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContext) return;
+    this.audioCtx = new AudioContext();
+  }
+
+  _resumeAudioContext() {
+    if (!this.audioCtx) return;
+    if (this.audioCtx.state === 'suspended') {
+      this.audioCtx.resume().catch(() => {});
+    }
+  }
+
+  _createSlideSound() {
+    if (!this.sfx || !this.sfx.slide || this._slideSoundActive) return;
+    this._slideSoundActive = true;
+    this.sfx.slide.currentTime = 0;
+    const playPromise = this.sfx.slide.play();
+    if (playPromise && playPromise.catch) playPromise.catch(() => {});
+  }
+
+  _setSlideSoundVolume(volume) {
+    if (!this.sfx || !this.sfx.slide) return;
+    const target = Math.min(Math.max(volume, 0), 1) * 0.24;
+    this.sfx.slide.volume = target;
+    if (target <= 0.001 && this._slideSoundActive) {
+      this.sfx.slide.pause();
+      this.sfx.slide.currentTime = 0;
+      this._slideSoundActive = false;
+    } else if (target > 0 && this.sfx.slide.paused) {
+      const playPromise = this.sfx.slide.play();
+      if (playPromise && playPromise.catch) playPromise.catch(() => {});
+      this._slideSoundActive = true;
+    }
+  }
+
+  _playJumpSound() {
+    if (!this.sfx || !this.sfx.jump) return;
+    this._stopJumpSound(); // Stop any previous jump sound
+    this._stopYahooSound(); // Stop yahoo sound when jumping
+    this.currentJumpAudio = this.sfx.jump.cloneNode();
+    this.currentJumpAudio.volume = 0.95;
+    const playPromise = this.currentJumpAudio.play();
+    if (playPromise && playPromise.catch) playPromise.catch(() => {});
+  }
+
+  _playParachuteSound() {
+    if (!this.sfx || !this.sfx.parachute) return;
+    const audio = this.sfx.parachute;
+    audio.volume = 0.75;
+    if (!audio.paused) return;
+    audio.currentTime = 0;
+    const playPromise = audio.play();
+    if (playPromise && playPromise.catch) playPromise.catch(() => {});
+  }
+
+  _stopParachuteSound() {
+    if (!this.sfx || !this.sfx.parachute) return;
+    const audio = this.sfx.parachute;
+    if (!audio.paused) {
+      audio.pause();
+      audio.currentTime = 0;
+    }
+  }
+
+  _stopRampSound() {
+    if (this.currentRampAudio && !this.currentRampAudio.paused) {
+      this.currentRampAudio.pause();
+      this.currentRampAudio.currentTime = 0;
+      this.currentRampAudio = null;
+    }
+  }
+
+  _stopJumpSound() {
+    if (this.currentJumpAudio && !this.currentJumpAudio.paused) {
+      this.currentJumpAudio.pause();
+      this.currentJumpAudio.currentTime = 0;
+      this.currentJumpAudio = null;
+    }
+  }
+
+  _stopYahooSound() {
+    if (this.currentYahooAudio && !this.currentYahooAudio.paused) {
+      this.currentYahooAudio.pause();
+      this.currentYahooAudio.currentTime = 0;
+      this.currentYahooAudio = null;
+    }
+  }
+
+  _playYahooSound() {
+    if (!this.sfx || !this.sfx.yahoo) return;
+    this._stopYahooSound(); // Stop any previous yahoo sound
+    this.currentYahooAudio = this.sfx.yahoo.cloneNode();
+    this.currentYahooAudio.volume = 0.9;
+    const playPromise = this.currentYahooAudio.play();
+    if (playPromise && playPromise.catch) playPromise.catch(() => {});
+  }
+
+  _playLandingSound() {
+    if (!this.sfx || !this.sfx.landing) return;
+    const audio = this.sfx.landing.cloneNode();
+    audio.volume = 0.85;
+    const playPromise = audio.play();
+    if (playPromise && playPromise.catch) playPromise.catch(() => {});
+  }
+
+  _playCoinSound() {
+    if (!this.sfx || !this.sfx.coin) return;
+    const audio = this.sfx.coin.cloneNode();
+    audio.volume = 0.9;
+    const playPromise = audio.play();
+    if (playPromise && playPromise.catch) playPromise.catch(() => {});
+    setTimeout(() => {
+      if (!audio.paused) {
+        audio.pause();
+        audio.currentTime = 0;
+      }
+    }, 500);
+  }
+
+  _playRampSound() {
+    if (!this.sfx || !this.sfx.ramp) return;
+    this._stopRampSound(); // Stop any previous ramp sound
+    this._stopYahooSound(); // Stop yahoo sound when ramp launching
+    this.currentRampAudio = this.sfx.ramp.cloneNode();
+    this.currentRampAudio.volume = 0.9;
+    const playPromise = this.currentRampAudio.play();
+    if (playPromise && playPromise.catch) playPromise.catch(() => {});
+  }
   // ─────────────────────────────────────
   // Snow / ice trail (particles + ground tracks)
   // ─────────────────────────────────────
@@ -4200,6 +4350,12 @@ export class Game {
     if (this.state !== 'playing') return;
     this._pendingGameOverTitle = title || 'CRASHED!';
     this._stopBgMusic();
+    if (this.sfx && this.sfx.crash) {
+      const crashAudio = this.sfx.crash.cloneNode();
+      crashAudio.volume = 0.95;
+      const playPromise = crashAudio.play();
+      if (playPromise && playPromise.catch) playPromise.catch(() => {});
+    }
     // Plant a flag at the death spot showing the distance reached
     this._placeDeathFlag(position, this.distance);
     this._explode(position.clone(), hitType || 'car');
@@ -4636,6 +4792,12 @@ export class Game {
     this._musicShouldPlay = false;
     this.bgMusic.pause();
     try { this.bgMusic.currentTime = 0; } catch (e) { /* ignore */ }
+    if (this.sfx && this.sfx.slide) {
+      this.sfx.slide.pause();
+      this.sfx.slide.currentTime = 0;
+      this._slideSoundActive = false;
+    }
+    this._stopParachuteSound();
   }
 
   restart(opts = {}) {
@@ -4780,6 +4942,7 @@ export class Game {
           this.isJumping = true;
           this.jumpVelocity = GAME_CONFIG.JUMP_FORCE;
           this.canDoubleJump = true;
+          this._playJumpSound();
         } else if (this.canDoubleJump) {
           // Double jump (only once per airborne session)
           this.canDoubleJump = false;
@@ -4807,12 +4970,14 @@ export class Game {
     }
     this.parachuteOpen = true;
     this.parachuteTimer = 0;
+    this._playParachuteSound();
   }
 
   _closeParachute() {
     if (!this.parachuteOpen) return;
     this.parachuteOpen = false;
     this.parachuteTimer = 0;
+    this._stopParachuteSound();
   }
 
   _flashChuteEmpty() {
@@ -4914,7 +5079,7 @@ export class Game {
       }
 
       // Apply friction/damping to momentum (reduced for better momentum retention)
-      const friction = 0.92; // Less friction so momentum lasts longer
+      const friction = 0.94; // Less friction so momentum lasts longer
       this._playerXMomentum *= Math.pow(friction, delta * 60); // Frame-rate independent
 
       // Clamp momentum to reasonable limits (increased for stronger input)
@@ -4932,8 +5097,42 @@ export class Game {
     const splitNear = this._mountainSplitFactor();
     const xMin = THREE.MathUtils.lerp(GAME_CONFIG.PLAYER_X_MIN, -10, splitNear);
     const xMax = THREE.MathUtils.lerp(GAME_CONFIG.PLAYER_X_MAX,  10, splitNear);
-    this.playerX = THREE.MathUtils.clamp(this.playerX, xMin, xMax);
+
+    // Smoothly decelerate momentum when approaching the left/right bounds.
+    const boundaryRange = 1.5;
+    if (this._playerXMomentum > 0) {
+      const distanceToRight = xMax - this.playerX;
+      if (distanceToRight < boundaryRange) {
+        const edgeFactor = THREE.MathUtils.smoothstep(distanceToRight, 0, boundaryRange);
+        this._playerXMomentum *= edgeFactor;
+      }
+    } else if (this._playerXMomentum < 0) {
+      const distanceToLeft = this.playerX - xMin;
+      if (distanceToLeft < boundaryRange) {
+        const edgeFactor = THREE.MathUtils.smoothstep(distanceToLeft, 0, boundaryRange);
+        this._playerXMomentum *= edgeFactor;
+      }
+    }
+
+    const clampedX = THREE.MathUtils.clamp(this.playerX, xMin, xMax);
+    if (clampedX !== this.playerX) {
+      if ((this._playerXMomentum > 0 && clampedX >= xMax) ||
+          (this._playerXMomentum < 0 && clampedX <= xMin)) {
+        this._playerXMomentum = 0;
+      }
+    }
+    this.playerX = clampedX;
     this.player.position.x = this.playerX;
+    const grounded = !this.isJumping && !this.airborneFromRamp && this.playerY <= 0.05;
+    const slideIntensity = grounded
+      ? Math.min(1, Math.abs(this._playerXMomentum) / (GAME_CONFIG.HORIZONTAL_SPEED * 0.8))
+      : 0;
+    if (slideIntensity > 0) {
+      this._ensureAudioContext();
+      this._createSlideSound();
+      this._resumeAudioContext();
+    }
+    this._setSlideSoundVolume(slideIntensity);
     this._playerXVelocity = (this.playerX - prevX) / Math.max(0.001, delta);
 
     // Tilt slightly in the direction of motion; lerp back to upright when idle.
@@ -4983,6 +5182,9 @@ export class Game {
         this.isJumping = false;
         this.canDoubleJump = false;
         this._closeParachute();
+        this._playLandingSound();
+        this._stopRampSound();
+        this._stopJumpSound();
         if (this.airborneFromRamp) this._finishAirTime();
       }
     }
@@ -5513,6 +5715,7 @@ export class Game {
         coin.visible = false;
         this.coins++;
         this.score += 10;
+        this._playCoinSound();
       }
     }
   }
@@ -5532,6 +5735,9 @@ export class Game {
     this._parachuteArmed = false;
     this._skySpawnCooldown = 0;
     if (this.airTimeEl) this.airTimeEl.classList.add('active');
+
+    // Ramp launch sound
+    this._playRampSound();
 
     // Dramatic sky burst the moment the player launches
     this._spawnSkyBurst();
@@ -5581,6 +5787,7 @@ export class Game {
     // A tiny camera shake on milestone
     this.shakeTimer = Math.max(this.shakeTimer, 0.35);
     this.shakeMagnitude = Math.max(this.shakeMagnitude, 0.25);
+    this._playYahooSound();
   }
 
   // ─────────────────────────────────────
