@@ -1,0 +1,670 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>Sled Surfers</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a1a; }
+
+    #game-canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+      touch-action: none;
+    }
+
+    /* HUD Overlay */
+    #hud {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      padding: 20px;
+      pointer-events: none;
+      z-index: 10;
+    }
+    #score {
+      font-family: 'Arial Black', sans-serif;
+      font-size: 32px;
+      color: white;
+      text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
+      text-align: center;
+    }
+    #distance {
+      font-family: 'Arial', sans-serif;
+      font-size: 18px;
+      color: #ffd700;
+      text-align: center;
+      margin-top: 4px;
+    }
+    #coins-display {
+      position: absolute;
+      top: 20px;
+      right: 20px;
+      font-family: 'Arial Black', sans-serif;
+      font-size: 24px;
+      color: #ffd700;
+      text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
+    }
+
+    /* Parachute energy bar — top-left, just below the speed bar, horizontal */
+    #chute-energy {
+      position: absolute;
+      top: 95px;
+      left: 20px;
+      width: 160px;
+      font-family: 'Arial Black', sans-serif;
+      color: #ffffff;
+      text-shadow: 1px 1px 3px rgba(0,0,0,0.6);
+      pointer-events: none;
+      z-index: 12;
+    }
+    #chute-energy .label {
+      font-size: 11px;
+      letter-spacing: 3px;
+      color: #b0d4f1;
+      transition: color 0.2s;
+      display: inline-block;
+    }
+    #chute-energy.empty .label,
+    #chute-energy.empty-flash .label {
+      color: #ff5a3c;
+    }
+    #chute-energy .recharge-text {
+      float: right;
+      font-size: 11px;
+      color: #00E5FF;
+      text-shadow: 0 0 6px rgba(0, 229, 255, 0.7);
+      opacity: 0;
+      transition: opacity 0.3s;
+    }
+    #chute-energy.recharging .recharge-text {
+      opacity: 1;
+      animation: chute-pulse 0.9s ease-in-out infinite;
+    }
+    @keyframes chute-pulse {
+      0%, 100% { opacity: 0.55; }
+      50%      { opacity: 1; }
+    }
+    #chute-energy .bar-container {
+      margin-top: 4px;
+      width: 100%;
+      height: 8px;
+      background: rgba(0, 0, 0, 0.35);
+      border-radius: 6px;
+      overflow: hidden;
+      position: relative;
+      box-shadow: inset 0 1px 2px rgba(0,0,0,0.5);
+      transition: box-shadow 0.2s;
+    }
+    #chute-energy.draining .bar-container {
+      box-shadow:
+        inset 0 1px 2px rgba(0,0,0,0.5),
+        0 0 10px rgba(255, 154, 60, 0.85);
+    }
+    #chute-energy.recharging .bar-container {
+      animation: chute-shimmer 1.2s ease-in-out infinite;
+    }
+    #chute-energy.empty-flash .bar-container {
+      animation: chute-empty 0.4s ease-in-out 2;
+    }
+    @keyframes chute-shimmer {
+      0%, 100% { box-shadow: inset 0 1px 2px rgba(0,0,0,0.5), 0 0 6px  rgba(0, 229, 255, 0.5); }
+      50%      { box-shadow: inset 0 1px 2px rgba(0,0,0,0.5), 0 0 14px rgba(0, 229, 255, 0.95); }
+    }
+    @keyframes chute-empty {
+      0%, 100% { box-shadow: inset 0 1px 2px rgba(0,0,0,0.5), 0 0 14px rgba(255,48,48,0.95); }
+      50%      { box-shadow: inset 0 1px 2px rgba(0,0,0,0.5); }
+    }
+    #chute-energy .bar-fill {
+      position: absolute;
+      top: 0;
+      left: 0;
+      height: 100%;
+      width: 100%;
+      background: linear-gradient(90deg, #00E5FF 0%, #AA00FF 100%);
+      transform-origin: left;
+      transform: scaleX(1);
+      transition: transform 0.12s linear, background 0.2s;
+    }
+    #chute-energy.warning .bar-fill {
+      background: linear-gradient(90deg, #ffd23f 0%, #ff5a3c 100%);
+    }
+
+    /* Speed indicator */
+    #speed-meter {
+      position: absolute;
+      top: 20px;
+      left: 20px;
+      width: 160px;
+      font-family: 'Arial Black', sans-serif;
+      color: #ffffff;
+      text-shadow: 1px 1px 3px rgba(0,0,0,0.6);
+      pointer-events: none;
+      z-index: 12;
+    }
+    #speed-meter .label {
+      font-size: 11px;
+      letter-spacing: 3px;
+      color: #b0d4f1;
+    }
+    #speed-meter .value {
+      font-size: 24px;
+      color: #ffffff;
+    }
+    #speed-meter .value .unit {
+      font-size: 12px;
+      color: #b0d4f1;
+      margin-left: 4px;
+    }
+    #speed-meter .bar {
+      margin-top: 4px;
+      width: 100%;
+      height: 8px;
+      background: rgba(0, 0, 0, 0.35);
+      border-radius: 6px;
+      overflow: hidden;
+      box-shadow: inset 0 1px 2px rgba(0,0,0,0.5);
+    }
+    #speed-meter .fill {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #4cd6ff 0%, #f5d65a 60%, #ff5a3c 100%);
+      transition: width 0.25s ease-out;
+      box-shadow: 0 0 8px rgba(255, 200, 80, 0.5);
+    }
+    #speed-meter.boost .fill {
+      box-shadow: 0 0 16px rgba(255, 90, 60, 0.9);
+    }
+
+    /* SPEED UP! flash */
+    #speed-up-flash {
+      position: absolute;
+      top: 38%;
+      left: 50%;
+      transform: translate(-50%, -50%) scale(0.6);
+      font-family: 'Arial Black', sans-serif;
+      font-size: 72px;
+      color: #fff;
+      letter-spacing: 6px;
+      text-shadow:
+        0 0 20px #ff5a3c,
+        0 0 40px #ff7a00,
+        4px 4px 0 #aa2a00;
+      pointer-events: none;
+      opacity: 0;
+      z-index: 14;
+    }
+    #speed-up-flash.show {
+      animation: speed-up-pop 1.1s ease-out forwards;
+    }
+    @keyframes speed-up-pop {
+      0%   { opacity: 0; transform: translate(-50%, -50%) scale(0.4); }
+      20%  { opacity: 1; transform: translate(-50%, -50%) scale(1.15); }
+      35%  { transform: translate(-50%, -50%) scale(0.95); }
+      55%  { transform: translate(-50%, -50%) scale(1.05); }
+      100% { opacity: 0; transform: translate(-50%, -55%) scale(1); }
+    }
+
+    /* Biome banner */
+    #biome-banner {
+      position: absolute;
+      top: 12%;
+      left: 50%;
+      transform: translateX(-50%);
+      font-family: 'Arial Black', sans-serif;
+      font-size: 22px;
+      letter-spacing: 6px;
+      color: #fff;
+      padding: 8px 26px;
+      background: rgba(0, 0, 0, 0.35);
+      border-radius: 30px;
+      text-shadow: 1px 1px 3px rgba(0,0,0,0.6);
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.5s, transform 0.5s;
+      z-index: 13;
+    }
+    #biome-banner.show {
+      opacity: 1;
+      transform: translateX(-50%) translateY(8px);
+    }
+
+    /* Air Time HUD */
+    #air-time {
+      position: absolute;
+      top: 90px;
+      left: 50%;
+      transform: translateX(-50%) scale(0.8);
+      font-family: 'Arial Black', sans-serif;
+      font-size: 28px;
+      color: #fff;
+      text-shadow:
+        0 0 10px #ffae42,
+        0 0 22px #ff7a00,
+        2px 2px 4px rgba(0,0,0,0.6);
+      text-align: center;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.2s, transform 0.2s;
+      z-index: 12;
+    }
+    #air-time.active {
+      opacity: 1;
+      transform: translateX(-50%) scale(1);
+    }
+    #air-time .label {
+      font-size: 16px;
+      letter-spacing: 3px;
+      color: #ffd97a;
+      display: block;
+    }
+    #air-time .timer {
+      font-size: 36px;
+      color: #ffffff;
+      display: block;
+      margin-top: 2px;
+    }
+    #air-time .bonus {
+      font-size: 18px;
+      color: #ffd700;
+      display: block;
+      margin-top: 2px;
+    }
+
+    /* Bonus pop */
+    #bonus-pop {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%) scale(0.8);
+      font-family: 'Arial Black', sans-serif;
+      font-size: 56px;
+      color: #ffd700;
+      text-shadow:
+        0 0 18px #ffae42,
+        0 0 30px #ff7a00,
+        3px 3px 0 #aa3700;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.4s, transform 0.6s cubic-bezier(0.2, 1.4, 0.4, 1);
+      z-index: 13;
+    }
+    #bonus-pop.show {
+      opacity: 1;
+      transform: translate(-50%, -80%) scale(1);
+    }
+
+    /* Motion blur speed lines after a ramp landing */
+    #speed-lines {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.25s;
+      z-index: 11;
+      overflow: hidden;
+    }
+    #speed-lines.active { opacity: 1; }
+    #speed-lines .line {
+      position: absolute;
+      width: 140px;
+      height: 3px;
+      background: linear-gradient(90deg, rgba(255,255,255,0) 0%, rgba(255,255,255,0.85) 50%, rgba(255,255,255,0) 100%);
+      filter: blur(1px);
+      animation: speed-line-streak 0.55s linear infinite;
+    }
+    @keyframes speed-line-streak {
+      0%   { transform: translateX(40vw); opacity: 0; }
+      15%  { opacity: 1; }
+      85%  { opacity: 1; }
+      100% { transform: translateX(-60vw); opacity: 0; }
+    }
+
+    /* Start Screen */
+    #start-screen {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: linear-gradient(180deg, #87CEEB 0%, #E0F0FF 50%, #FFFFFF 100%);
+      z-index: 20;
+      transition: opacity 0.5s;
+    }
+    #start-screen h1 {
+      font-family: 'Arial Black', sans-serif;
+      font-size: 48px;
+      color: #1a3a5c;
+      text-shadow: 3px 3px 0px #87CEEB;
+      margin-bottom: 20px;
+    }
+    #start-screen p {
+      font-family: 'Arial', sans-serif;
+      font-size: 18px;
+      color: #4a6a8c;
+      margin-bottom: 40px;
+    }
+    #start-btn {
+      font-family: 'Arial Black', sans-serif;
+      font-size: 24px;
+      padding: 16px 48px;
+      background: #ff6b35;
+      color: white;
+      border: none;
+      border-radius: 50px;
+      cursor: pointer;
+      pointer-events: all;
+      box-shadow: 0 4px 15px rgba(255,107,53,0.4);
+      transition: transform 0.2s;
+    }
+    #start-btn:hover { transform: scale(1.05); }
+
+    /* Game Over Screen */
+    #game-over {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0,0,0,0.7);
+      z-index: 20;
+    }
+    /* Win Screen */
+    #win-screen {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: radial-gradient(ellipse at center, rgba(255,200,80,0.25), rgba(0,0,0,0.85));
+      z-index: 22;
+    }
+    #win-screen h2 {
+      font-family: 'Arial Black', sans-serif;
+      font-size: 56px;
+      letter-spacing: 4px;
+      color: #FFD700;
+      text-shadow: 0 0 18px #FFAE42, 0 0 32px #FF7A00, 4px 4px 0 #aa3700;
+      margin-bottom: 16px;
+    }
+    #win-stats {
+      font-family: 'Arial', sans-serif;
+      font-size: 22px;
+      color: #ffffff;
+      text-align: center;
+      line-height: 1.6;
+      margin-bottom: 8px;
+    }
+    #win-seed {
+      font-family: 'Courier New', monospace;
+      font-size: 14px;
+      color: #b0d4f1;
+      margin-bottom: 30px;
+      letter-spacing: 1px;
+    }
+    #win-screen .win-buttons {
+      display: flex;
+      gap: 18px;
+    }
+    #win-screen button {
+      font-family: 'Arial Black', sans-serif;
+      font-size: 18px;
+      padding: 14px 32px;
+      background: #ff6b35;
+      color: white;
+      border: none;
+      border-radius: 50px;
+      cursor: pointer;
+      pointer-events: all;
+      box-shadow: 0 4px 14px rgba(255,107,53,0.45);
+    }
+    #win-screen #win-replay-btn {
+      background: #4ecdc4;
+      box-shadow: 0 4px 14px rgba(78,205,196,0.45);
+    }
+
+    /* Course progress bar (right side) */
+    #course-progress {
+      position: absolute;
+      right: 24px;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 60px;
+      pointer-events: none;
+      font-family: 'Arial Black', sans-serif;
+      color: #ffffff;
+      text-shadow: 1px 1px 3px rgba(0,0,0,0.6);
+      z-index: 12;
+      text-align: center;
+    }
+    #course-progress .flag-top {
+      font-size: 20px;
+      line-height: 1;
+      margin-bottom: 4px;
+    }
+    #course-progress .bar-wrap {
+      position: relative;
+      width: 12px;
+      height: 300px;
+      margin: 0 auto;
+      background: rgba(0,0,0,0.30);
+      border-radius: 8px;
+      overflow: visible;
+      box-shadow: inset 0 1px 2px rgba(0,0,0,0.6);
+    }
+    #course-progress .bar-fill {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      border-radius: 8px;
+      background: linear-gradient(0deg, #00E5FF 0%, #FFD700 100%);
+      transform-origin: bottom;
+      transform: scaleY(0);
+      transition: transform 0.15s linear;
+    }
+    #course-progress .player-marker {
+      position: absolute;
+      left: -7px;
+      bottom: 0;
+      width: 26px;
+      height: 26px;
+      margin-bottom: -13px;
+      border-radius: 50%;
+      background: radial-gradient(circle at 30% 30%, #fff, #b0d4f1 60%, #2d2d44);
+      box-shadow: 0 0 10px rgba(255,255,255,0.6), 0 2px 4px rgba(0,0,0,0.5);
+      transition: bottom 0.15s linear;
+    }
+    #course-progress .milestone {
+      position: absolute;
+      left: -4px;
+      width: 20px;
+      height: 2px;
+      background: rgba(255,255,255,0.55);
+      pointer-events: none;
+    }
+    #course-progress .milestone .ml {
+      position: absolute;
+      left: 24px;
+      top: -7px;
+      font-size: 9px;
+      letter-spacing: 1px;
+      color: #ffffff;
+      text-shadow: 1px 1px 2px rgba(0,0,0,0.7);
+      white-space: nowrap;
+    }
+    #course-progress .start-label {
+      font-size: 10px;
+      letter-spacing: 2px;
+      color: #b0d4f1;
+      margin-top: 6px;
+    }
+    #course-progress .remaining {
+      font-size: 11px;
+      color: #ffffff;
+      margin-top: 4px;
+    }
+
+    /* Hazard warning indicators */
+    .hazard-warn {
+      position: absolute;
+      top: 50%;
+      transform: translateY(-50%) scale(0.9);
+      font-size: 64px;
+      color: #ffae42;
+      text-shadow: 0 0 14px #ff7a00, 0 0 26px #ff5a3c, 2px 2px 4px rgba(0,0,0,0.6);
+      opacity: 0;
+      pointer-events: none;
+      z-index: 14;
+    }
+    .hazard-warn.show {
+      animation: hazard-pulse 0.5s ease-in-out infinite;
+    }
+    #hazard-warn-left  { left: 20px;  }
+    #hazard-warn-right { right: 20px; }
+    @keyframes hazard-pulse {
+      0%, 100% { opacity: 0.5; transform: translateY(-50%) scale(0.85); }
+      50%      { opacity: 1;   transform: translateY(-50%) scale(1.1); }
+    }
+    .hazard-warn-center {
+      position: absolute;
+      top: 25%;
+      left: 50%;
+      transform: translateX(-50%) scale(0.9);
+      font-family: 'Arial Black', sans-serif;
+      font-size: 32px;
+      letter-spacing: 4px;
+      color: #ff3a3a;
+      text-shadow: 0 0 14px #ff5a3c, 0 0 28px #ff0000, 2px 2px 4px rgba(0,0,0,0.7);
+      opacity: 0;
+      pointer-events: none;
+      z-index: 14;
+    }
+    .hazard-warn-center.show {
+      animation: lowpass-pulse 0.45s ease-in-out infinite;
+    }
+    @keyframes lowpass-pulse {
+      0%, 100% { opacity: 0.55; transform: translateX(-50%) scale(0.95); }
+      50%      { opacity: 1;    transform: translateX(-50%) scale(1.1); }
+    }
+
+    #game-over h2 {
+      font-family: 'Arial Black', sans-serif;
+      font-size: 42px;
+      color: white;
+      margin-bottom: 10px;
+    }
+    #final-score {
+      font-family: 'Arial', sans-serif;
+      font-size: 24px;
+      color: #ffd700;
+      margin-bottom: 30px;
+    }
+    #restart-btn {
+      font-family: 'Arial Black', sans-serif;
+      font-size: 20px;
+      padding: 14px 40px;
+      background: #ff6b35;
+      color: white;
+      border: none;
+      border-radius: 50px;
+      cursor: pointer;
+      pointer-events: all;
+    }
+
+    /* Loading */
+    #loading {
+      position: absolute;
+      bottom: 40px;
+      left: 50%;
+      transform: translateX(-50%);
+      font-family: 'Arial', sans-serif;
+      color: #4a6a8c;
+      font-size: 14px;
+      z-index: 25;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="game-canvas"></canvas>
+
+  <!-- HUD -->
+  <div id="hud" style="display:none;">
+    <div id="score">0</div>
+    <div id="distance">0m</div>
+    <div id="coins-display">0</div>
+    <div id="speed-meter">
+      <div class="label">SPEED</div>
+      <div class="value"><span class="num">0</span><span class="unit">u/s</span></div>
+      <div class="bar"><div class="fill"></div></div>
+    </div>
+    <div id="speed-up-flash">SPEED UP!</div>
+    <div id="biome-banner"></div>
+    <div id="air-time">
+      <span class="label">AIR TIME</span>
+      <span class="timer">0.00s</span>
+      <span class="bonus">+0</span>
+    </div>
+    <div id="bonus-pop"></div>
+    <div id="speed-lines"></div>
+    <div id="chute-energy">
+      <div class="label">CHUTE</div>
+      <div class="bar-container">
+        <div class="bar-fill"></div>
+      </div>
+      <div class="recharge-text">+15/s</div>
+    </div>
+    <div id="course-progress">
+      <div class="flag-top">🏁</div>
+      <div class="bar-wrap">
+        <div class="bar-fill"></div>
+        <div class="player-marker"></div>
+      </div>
+      <div class="start-label">START</div>
+      <div class="remaining">2000m left</div>
+    </div>
+    <div id="hazard-warn-left" class="hazard-warn">⚠</div>
+    <div id="hazard-warn-right" class="hazard-warn">⚠</div>
+    <div id="hazard-warn-center" class="hazard-warn-center">! WARNING — LOW PASS !</div>
+  </div>
+
+  <!-- Start Screen -->
+  <div id="start-screen">
+    <h1>Sled Surfers</h1>
+    <p>Swipe or use arrow keys to dodge obstacles!</p>
+    <button id="start-btn">PLAY</button>
+    <div id="loading">Loading assets...</div>
+  </div>
+
+  <!-- Game Over Screen -->
+  <div id="game-over">
+    <h2 id="game-over-title">Game Over!</h2>
+    <div id="final-score"></div>
+    <button id="restart-btn">PLAY AGAIN</button>
+  </div>
+
+  <!-- Win Screen -->
+  <div id="win-screen">
+    <h2>COURSE COMPLETE!</h2>
+    <div id="win-stats"></div>
+    <div id="win-seed"></div>
+    <div class="win-buttons">
+      <button id="win-new-btn">PLAY AGAIN</button>
+      <button id="win-replay-btn">REPLAY MAP</button>
+    </div>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
