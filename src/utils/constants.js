@@ -11,7 +11,7 @@ export const GAME_CONFIG = {
   LANE_COUNT: 3,           // Number of spawn anchors (left, center, right)
 
   // Continuous horizontal control
-  HORIZONTAL_SPEED: 12,    // World units per second (keyboard hold)
+  HORIZONTAL_SPEED: 120,    // World units per second (keyboard hold)
   PLAYER_X_MIN: -6,
   PLAYER_X_MAX: 6,
   TOUCH_DRAG_SCALE: 0.025, // World units per pixel of finger drag

@@ -2,9 +2,9 @@
  * InputManager — continuous horizontal control + jump/duck swipes
  *
  * Horizontal:
- *   • Keyboard: holding Left/Right (or A/D) sets `horizontalAxis` to ±1.
- *     Release to settle to 0. The game multiplies it by HORIZONTAL_SPEED
- *     for a continuous slide.
+ *   • Keyboard: holding Left/Right (or A/D) sets `horizontalAxis` to ∓1.
+ *     Left = +1 (move right), Right = -1 (move left). Release to settle to 0.
+ *     The game multiplies it by HORIZONTAL_SPEED for a continuous slide.
  *   • Touch: while a finger is down, `touchDeltaX` is the live horizontal
  *     drag distance in pixels relative to the touch-start point. The game
  *     converts that into a target X.
@@ -190,8 +190,9 @@ export class InputManager {
   }
 
   _refreshAxis() {
+    // Flipped controls: left = positive (right movement), right = negative (left movement)
     this.horizontalAxis =
-      (this._rightHeld ? 1 : 0) - (this._leftHeld ? 1 : 0);
+      (this._leftHeld ? 1 : 0) - (this._rightHeld ? 1 : 0);
   }
 
   _emit(direction) {

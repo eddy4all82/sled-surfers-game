@@ -41,6 +41,7 @@ export class Game {
     this.playerX = 0;            // float world X, clamped to [PLAYER_X_MIN..MAX]
     this.playerY = 0;
     this._playerXVelocity = 0;   // last-frame velocity, for tilt/visual feedback
+    this._playerXMomentum = 0;   // horizontal momentum for smooth movement
     this._touchDragOriginX = 0;  // playerX at touch-start, for drag-mapping
     this.isJumping = false;
     this.isDucking = false;
@@ -4668,6 +4669,7 @@ export class Game {
     this.coins = 0;
     this.playerX = 0;
     this._playerXVelocity = 0;
+    this._playerXMomentum = 0;
     this._wasDragging = false;
     this.isJumping = false;
     this.isDucking = false;
@@ -4888,8 +4890,9 @@ export class Game {
     // Biome transitions
     this._updateBiome();
 
-    // Continuous horizontal player movement.
-    //   • Keyboard: holding L/R sets input.horizontalAxis to ±1 → constant slide.
+    // Continuous horizontal player movement with momentum.
+    //   • Keyboard: holding L/R applies force to momentum → smooth slide with carry.
+    //     Left = +1 (move right), Right = -1 (move left).
     //   • Touch:   while a finger is dragging, map the live drag delta onto
     //     the player's X.
     const prevX = this.playerX;
@@ -4901,8 +4904,25 @@ export class Game {
       const target = this._touchDragOriginX
         + this.input.touchDeltaX * GAME_CONFIG.TOUCH_DRAG_SCALE;
       this.playerX += (target - this.playerX) * Math.min(1, 18 * delta);
-    } else if (this.input && this.input.horizontalAxis) {
-      this.playerX += this.input.horizontalAxis * GAME_CONFIG.HORIZONTAL_SPEED * delta;
+      // Reset momentum during touch drag for direct control
+      this._playerXMomentum = 0;
+    } else {
+      // Apply input as force to momentum (increased gain for responsiveness)
+      if (this.input && this.input.horizontalAxis) {
+        const inputForce = this.input.horizontalAxis * GAME_CONFIG.HORIZONTAL_SPEED * delta;
+        this._playerXMomentum += inputForce;
+      }
+
+      // Apply friction/damping to momentum (reduced for better momentum retention)
+      const friction = 0.92; // Less friction so momentum lasts longer
+      this._playerXMomentum *= Math.pow(friction, delta * 60); // Frame-rate independent
+
+      // Clamp momentum to reasonable limits (increased for stronger input)
+      const maxMomentum = GAME_CONFIG.HORIZONTAL_SPEED * 0.8;
+      this._playerXMomentum = THREE.MathUtils.clamp(this._playerXMomentum, -maxMomentum, maxMomentum);
+
+      // Apply momentum to position
+      this.playerX += this._playerXMomentum * delta;
     }
     this._wasDragging = dragging;
 
