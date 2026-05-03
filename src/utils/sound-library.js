@@ -71,8 +71,7 @@ export const SOUND_EVENTS = {
     '/audio/weal.m4a',
   ],
   coin_pickup: [
-    '/audio/coin.m4a',
-    '/audio/coin.mp3',
+    '/audio/coin.mp3?v=2',
   ],
   jump:        ['/audio/jump.mp3'],
   double_jump: [],
@@ -145,7 +144,17 @@ export class SoundLibrary {
       this._ctx = new AC();
       this._destinationGain = this._ctx.createGain();
       this._destinationGain.gain.value = this._volume;
-      this._destinationGain.connect(this._ctx.destination);
+      // Master limiter: tames overlapping SFX bursts so the summed signal
+      // stops clipping when several events fire at once. Threshold/ratio
+      // are intentionally gentle — keeps single-shot punch, only kicks in
+      // on dense moments (coin chains, crash + sled + drone alert, etc).
+      this._limiter = this._ctx.createDynamicsCompressor();
+      this._limiter.threshold.value = -12;
+      this._limiter.knee.value = 6;
+      this._limiter.ratio.value = 6;
+      this._limiter.attack.value = 0.003;
+      this._limiter.release.value = 0.1;
+      this._destinationGain.connect(this._limiter).connect(this._ctx.destination);
     } catch (e) {
       this._ctx = null;
     }
