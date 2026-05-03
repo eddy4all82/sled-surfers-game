@@ -2,17 +2,46 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <meta name="viewport"
+        content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <!-- iOS Safari: keep the page in standalone-like mode so swipes don't
+       trigger Safari's native back/forward gestures. -->
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="format-detection" content="telephone=no" />
   <title>Sled Surfers</title>
   <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a1a; }
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+      /* Block iOS long-press text selection and the callout/preview menu */
+      -webkit-touch-callout: none;
+      -webkit-user-select: none;
+      -ms-user-select: none;
+      user-select: none;
+      /* Kill the blue tap-flash highlight */
+      -webkit-tap-highlight-color: rgba(0,0,0,0);
+    }
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #0a0a1a;
+      /* Stop iOS pull-to-refresh and rubber-band scroll */
+      overscroll-behavior: none;
+      -webkit-overflow-scrolling: auto;
+      position: fixed;
+      touch-action: none;
+    }
 
     #game-canvas {
       width: 100%;
       height: 100%;
       display: block;
+      /* No browser pan/zoom/double-tap-to-zoom — input goes straight to JS */
       touch-action: none;
+      -webkit-user-drag: none;
     }
 
     /* HUD Overlay */
@@ -364,6 +393,12 @@
       transition: transform 0.2s;
     }
     #start-btn:hover { transform: scale(1.05); }
+    #start-btn:disabled {
+      background: #aaa;
+      cursor: not-allowed;
+      transform: none;
+      opacity: 0.7;
+    }
 
     /* Game Over Screen */
     #game-over {
@@ -594,6 +629,147 @@
       font-size: 14px;
       z-index: 25;
     }
+
+    /* ── Settings overlay ───────────────────────────────── */
+    .settings-btn {
+      display: inline-block;
+      margin-top: 14px;
+      font-family: 'Arial Black', sans-serif;
+      font-size: 14px;
+      padding: 9px 22px;
+      background: rgba(255,255,255,0.15);
+      color: #fff;
+      border: 1.5px solid rgba(255,255,255,0.4);
+      border-radius: 50px;
+      cursor: pointer;
+      pointer-events: all;
+      letter-spacing: 0.5px;
+    }
+    .settings-btn:hover { background: rgba(255,255,255,0.25); }
+    /* Start (loading) screen variant — solid blue background */
+    #start-screen .settings-btn {
+      background: #2f6fe0;
+      border-color: #5a91f0;
+    }
+    #start-screen .settings-btn:hover { background: #3d80f5; }
+    #settings-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 18, 38, 0.78);
+      z-index: 200;
+      align-items: center;
+      justify-content: center;
+      backdrop-filter: blur(4px);
+    }
+    #settings-overlay .panel {
+      background: linear-gradient(180deg, #1a2c4a, #0d1b30);
+      border: 1px solid #3b5a8a;
+      border-radius: 18px;
+      padding: 26px 30px 22px;
+      width: 380px;
+      max-width: 90vw;
+      max-height: 85vh;
+      overflow-y: auto;
+      color: #e6efff;
+      font-family: Arial, sans-serif;
+      box-shadow: 0 30px 60px rgba(0,0,0,0.6);
+    }
+    #settings-overlay h2 {
+      font-family: 'Arial Black', sans-serif;
+      font-size: 22px;
+      color: #ffd23f;
+      margin: 0 0 16px;
+      text-align: center;
+      letter-spacing: 2px;
+    }
+    #settings-overlay .section-title {
+      font-size: 11px;
+      letter-spacing: 1.5px;
+      color: #6f9ad8;
+      text-transform: uppercase;
+      margin: 18px 0 6px;
+      border-bottom: 1px solid #2a4670;
+      padding-bottom: 4px;
+    }
+    #settings-overlay .setting {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 0;
+      font-size: 14px;
+    }
+    #settings-overlay .setting label { flex: 1; }
+    #settings-overlay .slider-val {
+      min-width: 48px;
+      text-align: right;
+      color: #9ec5ff;
+      font-variant-numeric: tabular-nums;
+    }
+    #settings-overlay input[type="range"] { flex: 1.2; }
+    #settings-overlay .keybinds {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px 12px;
+      margin: 6px 0 4px;
+    }
+    #settings-overlay .kb {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      font-size: 14px;
+    }
+    #settings-overlay .key-btn {
+      padding: 6px 10px;
+      background: #25406b;
+      color: #fff;
+      border: 1px solid #3b5a8a;
+      border-radius: 6px;
+      cursor: pointer;
+      font-family: monospace;
+      font-size: 13px;
+      min-width: 80px;
+      text-align: center;
+    }
+    #settings-overlay .key-btn:hover { background: #2f548b; }
+    #settings-overlay .touch-scheme {
+      margin-top: 10px;
+      padding-top: 8px;
+      border-top: 1px solid #2a4670;
+    }
+    #settings-overlay .touch-scheme .ts-label {
+      font-size: 12px;
+      color: #6f9ad8;
+      margin-bottom: 6px;
+      letter-spacing: 0.5px;
+    }
+    #settings-overlay .touch-scheme .ts-opt {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 5px 0;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    #settings-overlay .touch-scheme .ts-opt input { flex: none; }
+    #settings-overlay .settings-buttons {
+      display: flex;
+      gap: 10px;
+      margin-top: 22px;
+    }
+    #settings-overlay .settings-buttons button {
+      flex: 1;
+      padding: 11px 0;
+      font-family: 'Arial Black', sans-serif;
+      font-size: 14px;
+      letter-spacing: 1px;
+      border: none;
+      border-radius: 50px;
+      cursor: pointer;
+    }
+    #settings-reset { background: #444; color: #eee; }
+    #settings-close { background: #ff6b35; color: #fff; }
   </style>
 </head>
 <body>
@@ -644,6 +820,7 @@
     <h1>Sled Surfers</h1>
     <p>Swipe or use arrow keys to dodge obstacles!</p>
     <button id="start-btn">PLAY</button>
+    <button class="open-settings settings-btn">⚙ SETTINGS</button>
     <div id="loading">Loading assets...</div>
   </div>
 
@@ -652,6 +829,7 @@
     <h2 id="game-over-title">Game Over!</h2>
     <div id="final-score"></div>
     <button id="restart-btn">PLAY AGAIN</button>
+    <button class="open-settings settings-btn">⚙ SETTINGS</button>
   </div>
 
   <!-- Win Screen -->
@@ -662,6 +840,74 @@
     <div class="win-buttons">
       <button id="win-new-btn">PLAY AGAIN</button>
       <button id="win-replay-btn">REPLAY MAP</button>
+      <button class="open-settings settings-btn">⚙ SETTINGS</button>
+    </div>
+  </div>
+
+  <!-- Settings Overlay -->
+  <div id="settings-overlay">
+    <div class="panel">
+      <h2>SETTINGS</h2>
+
+      <div class="section-title">AUDIO</div>
+      <div class="setting">
+        <label for="setting-music-on">Background music</label>
+        <input type="checkbox" id="setting-music-on">
+      </div>
+      <div class="setting">
+        <label for="setting-sfx-on">Sound effects</label>
+        <input type="checkbox" id="setting-sfx-on">
+      </div>
+      <div class="setting">
+        <label for="setting-music-vol">Music volume</label>
+        <input type="range" id="setting-music-vol" min="0" max="100" step="5" value="55">
+        <span class="slider-val" id="music-vol-val">55%</span>
+      </div>
+
+      <div class="section-title">CONTROLS</div>
+      <div class="setting">
+        <label for="setting-swap-lr">Swap Left / Right</label>
+        <input type="checkbox" id="setting-swap-lr">
+      </div>
+      <div class="keybinds">
+        <div class="kb"><span>Left</span> <button class="key-btn" data-action="left">—</button></div>
+        <div class="kb"><span>Right</span> <button class="key-btn" data-action="right">—</button></div>
+        <div class="kb"><span>Jump</span> <button class="key-btn" data-action="jump">—</button></div>
+        <div class="kb"><span>Duck</span> <button class="key-btn" data-action="duck">—</button></div>
+      </div>
+
+      <!-- Mobile-only — JS toggles display:block when running on touch devices -->
+      <div id="touch-scheme-row" class="touch-scheme" style="display:none;">
+        <div class="ts-label">Mobile gesture for jump</div>
+        <label class="ts-opt">
+          <input type="radio" name="touch-scheme" value="tap">
+          <span><b>Tap</b> = jump · <b>Tap & hold</b> = double jump</span>
+        </label>
+        <label class="ts-opt">
+          <input type="radio" name="touch-scheme" value="swipe">
+          <span><b>Swipe up</b> = jump · <b>Swipe up & hold</b> = double jump</span>
+        </label>
+        <label class="ts-opt">
+          <input type="radio" name="touch-scheme" value="hold">
+          <span><b>Hold</b> = jump · <b>Swipe up</b> = double jump</span>
+        </label>
+      </div>
+
+      <div class="section-title">CAMERA</div>
+      <div class="setting">
+        <label for="setting-fp">First-person view</label>
+        <input type="checkbox" id="setting-fp">
+      </div>
+      <div class="setting">
+        <label for="setting-cam-dist">Distance (3rd person)</label>
+        <input type="range" id="setting-cam-dist" min="0.5" max="2.0" step="0.05" value="1.0">
+        <span class="slider-val" id="cam-dist-val">1.00x</span>
+      </div>
+
+      <div class="settings-buttons">
+        <button id="settings-reset">RESET</button>
+        <button id="settings-close">DONE</button>
+      </div>
     </div>
   </div>
 

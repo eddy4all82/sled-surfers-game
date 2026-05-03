@@ -10,6 +10,9 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { InputManager } from './input-manager.js';
 import { GAME_CONFIG } from '../utils/constants.js';
 import { generateMap, randomSeed, DEFAULT_COURSE_LENGTH } from '../systems/map-generator.js';
+import { InstancedScenery } from '../systems/instanced-scenery.js';
+import { loadSettings, saveSettings, resetSettings, DEFAULT_SETTINGS } from '../utils/settings.js';
+import { SoundLibrary, SOUND_EVENTS, EVENT_DUCK } from '../utils/sound-library.js';
 
 export class Game {
   constructor() {
@@ -77,6 +80,10 @@ export class Game {
     // player stays well framed when going around the building, then snaps
     // back to centered after crossing.
     this._cameraXShift = 0;
+    // Smoothed copies of the player's X/Y used by the camera so its follow
+    // motion lags slightly — a "floating" chase shot rather than a rigid lock.
+    this._smoothPlayerX = 0;
+    this._smoothPlayerY = 0;
 
     // Speed-up milestones
     this.nextSpeedUpAt = GAME_CONFIG.SPEED_UP_INTERVAL;
@@ -100,6 +107,18 @@ export class Game {
     // Systems
     this.input = null;
     this.loader = new GLTFLoader();
+    this.settings = loadSettings();
+    // SFX library — pool of clips per event, see src/utils/sound-library.js
+    // for how to add new events / sounds. play() picks a clip at random
+    // from the matching event's pool. Respects the SFX-on/off setting.
+    // Per-event ducking (declared in EVENT_DUCK) calls back into the game
+    // here so we can dip the bg-music volume for the configured duration.
+    this.sounds = new SoundLibrary(SOUND_EVENTS, {
+      enabled: this.settings.sfxEnabled,
+      volume:  1.0,
+      duckMap: EVENT_DUCK,
+      onDuck:  ({ to, durationMs }) => this._duckBgMusic(to, durationMs),
+    });
 
     // Object pools
     this.obstacles = [];        // legacy in-lane vehicles, no longer spawned
@@ -787,6 +806,10 @@ export class Game {
     this._setupScene();
     this._setupCamera();
     this._setupLighting();
+    // Phase 1 perf: pooled InstancedMesh scenery for the high-volume kinds
+    // (pine, palm, lamp). Must be ready BEFORE _createPlaceholderWorld so the
+    // first wave of trees and lamps lands in the instance pools.
+    this.instancedScenery = new InstancedScenery(this.scene);
     this._createPlaceholderWorld();
 
     // Generate the procedural course map (Phase 1) and place the finish line
@@ -795,24 +818,217 @@ export class Game {
     // Input
     this.input = new InputManager(this.canvas);
     this.input.onSwipe = (dir) => this._handleSwipe(dir);
+    this._applySettings();
+    this._wireSettingsUI();
 
-    // UI
-    document.getElementById('start-btn').addEventListener('click', () => this.start());
-    document.getElementById('restart-btn').addEventListener('click', () => this.restart());
+    // UI — every gameplay-start click is also the moment to unlock the
+    // SFX library so iOS / mobile Safari permits later automatic plays.
+    const startGesture = (fn) => () => {
+      if (this.sounds && this.sounds.unlock) this.sounds.unlock();
+      fn();
+    };
+    document.getElementById('start-btn').addEventListener(
+      'click', startGesture(() => this.start()));
+    document.getElementById('restart-btn').addEventListener(
+      'click', startGesture(() => this.restart()));
     const winNew = document.getElementById('win-new-btn');
     const winReplay = document.getElementById('win-replay-btn');
-    if (winNew) winNew.addEventListener('click', () => this.restart({ newSeed: true }));
-    if (winReplay) winReplay.addEventListener('click', () => this.restart({ newSeed: false }));
+    if (winNew) winNew.addEventListener(
+      'click', startGesture(() => this.restart({ newSeed: true })));
+    if (winReplay) winReplay.addEventListener(
+      'click', startGesture(() => this.restart({ newSeed: false })));
 
     // Initial milestone tick on the progress bar
     this._populateProgressMilestones();
 
-    // Ready
+    // Pre-fetch + decode every SFX clip while still on the loading screen,
+    // so the first PLAY tap on mobile doesn't stutter waiting on audio
+    // network / decode. The PLAY button stays disabled until done.
+    const startBtn = document.getElementById('start-btn');
+    if (startBtn) startBtn.disabled = true;
     this.state = 'ready';
-    this.loadingEl.textContent = 'Ready!';
+    this.loadingEl.textContent = 'Loading audio 0%...';
+    Promise.all([
+      this.sounds.preloadAll({
+        onProgress: ({ done, total, failed }) => {
+          const pct = total ? Math.floor((done / total) * 100) : 100;
+          this.loadingEl.textContent = `Loading audio ${pct}%...`;
+        },
+      }),
+      this._preloadBgMusic(),
+    ]).then(([sfxResult]) => {
+      const { ready, total, failed } = sfxResult;
+      this.loadingEl.textContent = (failed > 0)
+        ? `Ready! (${ready}/${total} sounds — ${failed} skipped)`
+        : 'Ready!';
+      if (startBtn) startBtn.disabled = false;
+    });
 
     // Start render loop
     this._loop();
+  }
+
+  // ── Settings ────────────────────────────────────────────────
+
+  _applySettings() {
+    const s = this.settings;
+    if (this.input) {
+      this.input.setKeyBindings(s.keys);
+      this.input.setSwapLR(s.swapLR);
+      if (this.input.setTouchScheme) this.input.setTouchScheme(s.touchScheme);
+    }
+    if (this.sounds) this.sounds.setEnabled(s.sfxEnabled);
+    if (this.bgMusic) {
+      this.bgMusic.volume = Math.max(0, Math.min(1, s.musicVolume));
+      if (s.musicEnabled) {
+        this._musicShouldPlay = true;
+        if (this.state === 'playing') this._playBgMusic();
+      } else {
+        this._musicShouldPlay = false;
+        this._stopBgMusic && this._stopBgMusic();
+        try { this.bgMusic.pause(); } catch (e) {}
+      }
+    }
+  }
+
+  _wireSettingsUI() {
+    const overlay = document.getElementById('settings-overlay');
+    const openers = document.querySelectorAll('.open-settings');
+    const closeBtn = document.getElementById('settings-close');
+    const resetBtn = document.getElementById('settings-reset');
+    if (!overlay) return;
+
+    const open = () => { overlay.style.display = 'flex'; this._refreshSettingsUI(); };
+    const close = () => { overlay.style.display = 'none'; saveSettings(this.settings); };
+    openers.forEach((el) => el.addEventListener('click', open));
+    if (closeBtn) closeBtn.addEventListener('click', close);
+    if (resetBtn) resetBtn.addEventListener('click', () => {
+      this.settings = resetSettings();
+      this._applySettings();
+      this._refreshSettingsUI();
+    });
+
+    // Music volume
+    const volSlider = document.getElementById('setting-music-vol');
+    const volLabel  = document.getElementById('music-vol-val');
+    if (volSlider) volSlider.addEventListener('input', () => {
+      this.settings.musicVolume = parseInt(volSlider.value, 10) / 100;
+      if (volLabel) volLabel.textContent = `${volSlider.value}%`;
+      if (this.bgMusic) this.bgMusic.volume = this.settings.musicVolume;
+      saveSettings(this.settings);
+    });
+
+    // Music on/off
+    const musicChk = document.getElementById('setting-music-on');
+    if (musicChk) musicChk.addEventListener('change', () => {
+      this.settings.musicEnabled = musicChk.checked;
+      this._applySettings();
+      saveSettings(this.settings);
+    });
+
+    // SFX on/off (placeholder for future SoundLibrary)
+    const sfxChk = document.getElementById('setting-sfx-on');
+    if (sfxChk) sfxChk.addEventListener('change', () => {
+      this.settings.sfxEnabled = sfxChk.checked;
+      saveSettings(this.settings);
+    });
+
+    // Swap LR
+    const swapChk = document.getElementById('setting-swap-lr');
+    if (swapChk) swapChk.addEventListener('change', () => {
+      this.settings.swapLR = swapChk.checked;
+      if (this.input) this.input.setSwapLR(this.settings.swapLR);
+      saveSettings(this.settings);
+    });
+
+    // Touch scheme picker — only visible on touch devices (mobile/tablet).
+    // Detection: presence of a touch API. Avoids showing the radios on
+    // pure-keyboard desktops where they're irrelevant.
+    const touchRow = document.getElementById('touch-scheme-row');
+    const isTouchDevice = ('ontouchstart' in window)
+      || (navigator.maxTouchPoints > 0)
+      || (navigator.msMaxTouchPoints > 0);
+    if (touchRow) {
+      touchRow.style.display = isTouchDevice ? 'block' : 'none';
+      touchRow.querySelectorAll('input[name="touch-scheme"]').forEach((radio) => {
+        radio.addEventListener('change', () => {
+          if (!radio.checked) return;
+          this.settings.touchScheme = radio.value;
+          if (this.input && this.input.setTouchScheme) {
+            this.input.setTouchScheme(radio.value);
+          }
+          saveSettings(this.settings);
+        });
+      });
+    }
+
+    // First-person view
+    const fpChk = document.getElementById('setting-fp');
+    if (fpChk) fpChk.addEventListener('change', () => {
+      this.settings.firstPerson = fpChk.checked;
+      saveSettings(this.settings);
+    });
+
+    // Camera distance
+    const distSlider = document.getElementById('setting-cam-dist');
+    const distLabel  = document.getElementById('cam-dist-val');
+    if (distSlider) distSlider.addEventListener('input', () => {
+      this.settings.cameraDistance = parseFloat(distSlider.value);
+      if (distLabel) distLabel.textContent = `${this.settings.cameraDistance.toFixed(2)}x`;
+      saveSettings(this.settings);
+    });
+
+    // Key rebinds — clicking a key button arms a single capture; the next
+    // keydown becomes the new binding for that action.
+    document.querySelectorAll('.key-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const action = btn.dataset.action;
+        btn.textContent = 'Press a key…';
+        const onCapture = (e) => {
+          e.preventDefault();
+          window.removeEventListener('keydown', onCapture, true);
+          this.settings.keys[action] = [e.key];
+          if (this.input) this.input.setKeyBindings(this.settings.keys);
+          saveSettings(this.settings);
+          this._refreshSettingsUI();
+        };
+        window.addEventListener('keydown', onCapture, true);
+      });
+    });
+  }
+
+  _refreshSettingsUI() {
+    const s = this.settings;
+    const set = (id, prop, v) => {
+      const el = document.getElementById(id);
+      if (el) el[prop] = v;
+    };
+    set('setting-music-vol', 'value', Math.round(s.musicVolume * 100));
+    const volLabel = document.getElementById('music-vol-val');
+    if (volLabel) volLabel.textContent = `${Math.round(s.musicVolume * 100)}%`;
+    set('setting-music-on', 'checked', s.musicEnabled);
+    set('setting-sfx-on',   'checked', s.sfxEnabled);
+    set('setting-swap-lr',  'checked', s.swapLR);
+    set('setting-fp',       'checked', s.firstPerson);
+    set('setting-cam-dist', 'value', s.cameraDistance);
+    const distLabel = document.getElementById('cam-dist-val');
+    if (distLabel) distLabel.textContent = `${s.cameraDistance.toFixed(2)}x`;
+    document.querySelectorAll('.key-btn').forEach((btn) => {
+      const action = btn.dataset.action;
+      btn.textContent = (s.keys[action] || ['—']).map(prettifyKey).join(' / ');
+    });
+    // Touch-scheme picker — check the radio that matches the saved value.
+    document.querySelectorAll('input[name="touch-scheme"]').forEach((r) => {
+      r.checked = (r.value === s.touchScheme);
+    });
+    function prettifyKey(k) {
+      if (k === ' ') return 'Space';
+      if (k === 'ArrowUp')    return '↑';
+      if (k === 'ArrowDown')  return '↓';
+      if (k === 'ArrowLeft')  return '←';
+      if (k === 'ArrowRight') return '→';
+      return k;
+    }
   }
 
   _buildCourse() {
@@ -837,35 +1053,58 @@ export class Game {
       const splitFeat = chunk.specialFeatures.find(f => f.type === 'mountain_split');
       if (!splitFeat) continue;
 
-      const startZ = splitFeat.startZ;
-      const endZ = splitFeat.endZ;
-      const corridorLen = endZ - startZ;
-      const centerZ = (startZ + endZ) / 2;
+      const startZRaw = splitFeat.startZ;
+      const endZRaw   = splitFeat.endZ;
+      const corridorLen = endZRaw - startZRaw;
       const width = 6;            // building footprint (X = -3 .. +3)
       const height = 28;          // tall — can't clear with a double-jump
-      // Single high-rise per segment, ~25 long, sitting in the middle of the
-      // split corridor. The path content covers the full corridor length so
-      // the player can swerve well before reaching the building.
       const buildingLen = Math.min(corridorLen, 25);
+      const halfL = buildingLen / 2;
+
+      // Building MUST sit on land between cross-streets, never on top of one.
+      // The building's Z extent is buildingLen ± a 5-unit padding for the
+      // surrounding caution / stop signs. Walk the chunk's corridor in
+      // small steps until we find a centerZ where neither the building
+      // nor its sign halo overlaps any cross-street's Z band.
+      const SAFETY_PAD = 5;
+      const safeOf = (z) => !this._zHasCrossStreet(z, halfL + SAFETY_PAD);
+      let centerZ = (startZRaw + endZRaw) / 2;
+      if (!safeOf(centerZ)) {
+        const corridorMin = startZRaw + halfL;
+        const corridorMax = endZRaw   - halfL;
+        let found = false;
+        for (let probe = centerZ; probe <= corridorMax + 60; probe += 4) {
+          if (safeOf(probe)) { centerZ = probe; found = true; break; }
+        }
+        if (!found) {
+          for (let probe = centerZ; probe >= corridorMin - 60; probe -= 4) {
+            if (safeOf(probe)) { centerZ = probe; found = true; break; }
+          }
+        }
+        // If still not safe (impossibly dense map), skip this building rather
+        // than place it on a cross-street.
+        if (!safeOf(centerZ)) continue;
+      }
+      // Recompute the visual corridor anchors to follow the relocated building
+      const startZ = centerZ - halfL;
+      const endZ   = centerZ + halfL;
 
       const block = this._buildHighRiseBuilding(buildingLen, chunk.biome);
       block.position.set(0, 0, centerZ);
       block.userData.kind = 'building';
-      block.userData.startZ = startZ;          // corridor entry (for camera/widening)
-      block.userData.endZ = endZ;              // corridor exit
-      block.userData.length = buildingLen;     // collision Z extent (just the building)
+      block.userData.startZ = startZ;
+      block.userData.endZ = endZ;
+      block.userData.length = buildingLen;
       block.userData.corridorLength = corridorLen;
       block.userData.width = width;
       block.userData.height = height;
-      // Arch-passage parameters (a hole through the middle):
-      //   safe X ∈ [-archHalfW, archHalfW], Y ∈ [archYMin, archYMax]
       block.userData.archHalfW = 1.5;
       block.userData.archYMin = 3.0;
       block.userData.archYMax = 8.0;
       this.scene.add(block);
       this.mountainBlocks.push(block);
 
-      // Arrow signs at the entry of the split
+      // Arrow signs at the entry of the split (decorative — not collidable)
       const leftArrow = this._buildArrowSign('left');
       leftArrow.position.set(-2.6, 1.7, startZ - 1.0);
       leftArrow.userData.kind = 'arrow';
@@ -878,9 +1117,129 @@ export class Game {
       this.scene.add(rightArrow);
       this.mountainBlocks.push(rightArrow);
 
+      // Surround the building with collidable hazard signage.
+      this._spawnForkSignage(centerZ, startZ, endZ);
+
       // Spawn the per-path obstacles + coins (data lives on chunk.paths)
       if (chunk.paths) this._spawnSplitPathContent(chunk.paths);
     }
+  }
+
+  // Caution + stop signs around a mountain-split high-rise. Every sign is
+  // marked collidable with a small hit box so the player explodes if they
+  // crash into them, just like trees / lamps / rocks.
+  _spawnForkSignage(centerZ, startZ, endZ) {
+    const W = 6;                 // building width in X (matches block.userData.width)
+    const halfW = W / 2;
+    // Two stop signs on the corridor entry — one each side of the arch
+    for (const sx of [-2.2, 2.2]) {
+      const stop = this._buildStopSign();
+      stop.position.set(sx, 0, startZ - 3.0);
+      stop.userData.kind = 'stop_sign';
+      stop.userData.collidable = true;
+      stop.userData.length = 0.7;
+      stop.userData.width  = 0.7;
+      stop.userData.height = 2.5;
+      this.scene.add(stop);
+      this.mountainBlocks.push(stop);
+    }
+    // Caution triangles flanking the building on its four corners
+    const cornerOffsets = [
+      [-(halfW + 1.2), startZ - 0.5],
+      [ (halfW + 1.2), startZ - 0.5],
+      [-(halfW + 1.2), endZ + 0.5],
+      [ (halfW + 1.2), endZ + 0.5],
+    ];
+    for (const [cx, cz] of cornerOffsets) {
+      const sign = this._buildCautionSign();
+      sign.position.set(cx, 0, cz);
+      sign.userData.kind = 'caution_sign';
+      sign.userData.collidable = true;
+      sign.userData.length = 0.8;
+      sign.userData.width  = 0.8;
+      sign.userData.height = 2.5;
+      this.scene.add(sign);
+      this.mountainBlocks.push(sign);
+    }
+  }
+
+  // Yellow diamond CAUTION sign on a thin pole, ~2.5m tall.
+  _buildCautionSign() {
+    const group = new THREE.Group();
+    const poleMat = new THREE.MeshStandardMaterial({ color: 0x333333, roughness: 0.7 });
+    const pole = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.05, 0.07, 2.0, 8), poleMat,
+    );
+    pole.position.y = 1.0;
+    group.add(pole);
+    // Diamond plate (square rotated 45°)
+    const cnv = document.createElement('canvas');
+    cnv.width = 128; cnv.height = 128;
+    const ctx = cnv.getContext('2d');
+    ctx.fillStyle = '#FFD23F';
+    ctx.fillRect(0, 0, 128, 128);
+    ctx.strokeStyle = '#111';
+    ctx.lineWidth = 8;
+    ctx.strokeRect(4, 4, 120, 120);
+    ctx.fillStyle = '#111';
+    ctx.font = 'bold 92px Arial Black';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('!', 64, 70);
+    const tex = new THREE.CanvasTexture(cnv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    const plate = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.95, 0.95),
+      new THREE.MeshStandardMaterial({ map: tex, side: THREE.DoubleSide, roughness: 0.5 }),
+    );
+    plate.position.y = 2.1;
+    plate.rotation.z = Math.PI / 4;     // diamond orientation
+    group.add(plate);
+    // Backside duplicate so it reads from both directions
+    const plateBack = plate.clone();
+    plateBack.rotation.y = Math.PI;
+    group.add(plateBack);
+    return group;
+  }
+
+  // Octagonal red STOP sign on a thin pole, ~2.5m tall.
+  _buildStopSign() {
+    const group = new THREE.Group();
+    const poleMat = new THREE.MeshStandardMaterial({ color: 0x333333, roughness: 0.7 });
+    const pole = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.05, 0.07, 2.0, 8), poleMat,
+    );
+    pole.position.y = 1.0;
+    group.add(pole);
+    // Octagonal red plate built from a CircleGeometry with 8 segments
+    const plate = new THREE.Mesh(
+      new THREE.CircleGeometry(0.45, 8),
+      new THREE.MeshStandardMaterial({
+        color: 0xCC1F1A, side: THREE.DoubleSide, roughness: 0.5,
+      }),
+    );
+    plate.position.y = 2.1;
+    plate.rotation.z = Math.PI / 8;     // align flat side at top
+    group.add(plate);
+    // White "STOP" text via canvas texture overlaid slightly forward
+    const cnv = document.createElement('canvas');
+    cnv.width = 128; cnv.height = 128;
+    const ctx = cnv.getContext('2d');
+    ctx.clearRect(0, 0, 128, 128);
+    ctx.fillStyle = '#FFFFFF';
+    ctx.font = 'bold 36px Arial Black';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('STOP', 64, 64);
+    const tex = new THREE.CanvasTexture(cnv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    const text = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.65, 0.65),
+      new THREE.MeshBasicMaterial({ map: tex, transparent: true, side: THREE.DoubleSide }),
+    );
+    text.position.set(0, 2.1, 0.005);
+    group.add(text);
+    return group;
   }
 
   _buildHighRiseBuilding(length, biome) {
@@ -1348,13 +1707,16 @@ export class Game {
     const sun = new THREE.DirectionalLight(0xffffff, 1.2);
     sun.position.set(20, 40, -10);
     sun.castShadow = true;
-    sun.shadow.mapSize.set(2048, 2048);
+    // Phase 5 perf: 2048→1024 shadow map. Halves the shadow-pass cost
+    // and the visual difference is invisible at this camera distance.
+    sun.shadow.mapSize.set(1024, 1024);
     sun.shadow.camera.near = 1;
-    sun.shadow.camera.far = 100;
-    sun.shadow.camera.left = -30;
-    sun.shadow.camera.right = 30;
-    sun.shadow.camera.top = 30;
-    sun.shadow.camera.bottom = -30;
+    sun.shadow.camera.far = 80;     // tighter far plane, sharper close shadows
+    sun.shadow.camera.left = -25;
+    sun.shadow.camera.right = 25;
+    sun.shadow.camera.top = 25;
+    sun.shadow.camera.bottom = -25;
+    sun.shadow.bias = -0.0008;
     this.scene.add(sun);
 
     // Hemisphere for sky/ground ambient
@@ -1445,7 +1807,29 @@ export class Game {
     return false;
   }
 
+  // Project-wide rule: NO object (building, side decor, ramp, tree, lamp,
+  // car, rock, coin, sign) is allowed to land inside a cross-street's
+  // Z footprint. Every spawner uses this helper to displace its candidate
+  // Z to the nearest clean spot. Returns null if no safe Z within ±limit.
+  _clampToSafeZ(z, pad = 4, limit = 80) {
+    if (!this._zHasCrossStreet(z, pad)) return z;
+    // Try forward first (the player is moving forward — closer to original
+    // intended spacing reads better), then backward as fallback.
+    for (let step = 4; step <= limit; step += 4) {
+      const fwd = z + step;
+      if (!this._zHasCrossStreet(fwd, pad)) return fwd;
+      const bwd = z - step;
+      if (!this._zHasCrossStreet(bwd, pad)) return bwd;
+    }
+    return null;
+  }
+
   _addSideDecor(side, z, biome) {
+    // Project-wide rule: NEVER drop side decor (buildings, trees, lamps,
+    // rocks, planters, towers, etc.) inside a cross-street's Z footprint.
+    const safeZ = this._clampToSafeZ(z, 5);
+    if (safeZ == null) return;        // no clean Z in 80m — skip silently
+    z = safeZ;
     const sign = side;
     if (!biome) {
       // During a biome crossfade, randomly pick the previous or current biome
@@ -1575,8 +1959,10 @@ export class Game {
         (Math.random() - 0.5) * 2.6,
       );
       rock.rotation.y = Math.random() * Math.PI * 2;
-      rock.castShadow = true;
-      rock.receiveShadow = true;
+      // Phase 5 perf: rocks/cliff-chunks are tiny or sit far back; cast
+      // shadows contribute nothing visually at run speed.
+      rock.castShadow = false;
+      rock.receiveShadow = false;
       group.add(rock);
     }
 
@@ -1598,69 +1984,39 @@ export class Game {
     group.position.set(x, 0, z);
     group.userData.type = 'scenery';
     group.userData.biome = biome;
+    // Side-hit collision: rock cluster is a low solid mass. Player can
+    // fully clear by jumping (cluster is short, height ~1.6m), but a
+    // ground-level side hit explodes them.
+    group.userData.collidable = true;
+    group.userData.length = 2.4;
+    group.userData.width  = 2.4;
+    group.userData.height = 1.6;
+    group.userData.kind = 'rock';
     this.scene.add(group);
     this.scenery.push(group);
   }
 
   _addPineTree(x, z, biome) {
-    const group = new THREE.Group();
     biome = biome || this.currentBiome || 'snow';
-
-    // Trunk — original spec: r=0.15, h=1.5
-    const trunk = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.15, 0.18, 1.5, 8),
-      new THREE.MeshStandardMaterial({ color: 0x6b4423, roughness: 0.95 }),
-    );
-    trunk.position.y = 0.75;
-    trunk.castShadow = true;
-    group.add(trunk);
-
-    // 2-3 stacked dark green cones, each smaller than the one below
-    const foliageMat = new THREE.MeshStandardMaterial({
-      color: 0x2d5016, roughness: 0.85,
-    });
-    const snowMat = new THREE.MeshStandardMaterial({
-      color: 0xfafdff, roughness: 0.7,
-    });
-
-    const layerCount = 2 + Math.floor(Math.random() * 2); // 2 or 3
-    let baseY = 1.5;
-    const layers = [];
-    for (let i = 0; i < layerCount; i++) {
-      const r = 1.2 - i * 0.32;
-      const h = 1.4 - i * 0.22;
-      layers.push({ y: baseY + h / 2, r, h });
-      baseY += h * 0.8;
-    }
-    layers.forEach((l) => {
-      const cone = new THREE.Mesh(
-        new THREE.ConeGeometry(l.r, l.h, 8),
-        foliageMat,
-      );
-      cone.position.y = l.y;
-      cone.castShadow = true;
-      group.add(cone);
-
-      // Snow on the outer surface — slightly larger thin cone shell on top
-      if (biome === 'snow') {
-        const snowCap = new THREE.Mesh(
-          new THREE.ConeGeometry(l.r * 1.04, l.h * 0.55, 8, 1, true),
-          snowMat,
-        );
-        snowCap.position.y = l.y + l.h * 0.22;
-        group.add(snowCap);
-      }
-    });
-
-    const scale = 0.9 + Math.random() * 0.35;
-    group.scale.set(scale, scale, scale);
-    group.rotation.y = Math.random() * Math.PI * 2;
-
-    group.position.set(x, 0, z);
-    group.userData.type = 'scenery';
-    group.userData.biome = biome;
-    this.scene.add(group);
-    this.scenery.push(group);
+    // Phase 1 perf: instanced. Returns a marker Group (no real meshes added
+    // to the scene) carrying the instance handle. Recycle path releases
+    // the instance via _disposeObject's userData.releaseInstance hook.
+    const handle = this.instancedScenery.addPine(x, z, { biome });
+    const marker = new THREE.Group();
+    marker.position.set(x, 0, z);
+    marker.userData.type = 'scenery';
+    marker.userData.biome = biome;
+    marker.userData.instanceHandle = handle;
+    marker.userData.releaseInstance = () => this.instancedScenery.release(handle);
+    // Side-hit collision: pine trunk is ~0.4m wide, foliage flares to ~2m,
+    // top reaches ~4m. Trunk is the lethal solid; if the player jumps over
+    // (py > height - margin) they pass safely through the soft foliage.
+    marker.userData.collidable = true;
+    marker.userData.length = 0.9;     // hit-box Z half-extent ×2
+    marker.userData.width  = 0.9;     // hit-box X half-extent ×2
+    marker.userData.height = 4.0;     // safe-clear altitude
+    marker.userData.kind = 'tree';
+    this.scenery.push(marker);
   }
 
   _addCabin(x, z) {
@@ -1715,93 +2071,39 @@ export class Game {
   }
 
   _addStreetLamp(x, z) {
-    const group = new THREE.Group();
-
-    const baseMat = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.7 });
-    const base = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.22, 0.25, 8), baseMat);
-    base.position.y = 0.125;
-    group.add(base);
-
-    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.09, 4.0, 8), baseMat);
-    pole.position.y = 2.0;
-    pole.castShadow = true;
-    group.add(pole);
-
-    // Arm reaching toward the road
-    const reachSign = x < 0 ? 1 : -1;
-    const arm = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.07, 0.07), baseMat);
-    arm.position.set(reachSign * 0.4, 3.95, 0);
-    group.add(arm);
-
-    // Lamp head
-    const headMat = new THREE.MeshStandardMaterial({
-      color: 0xfff2a8, emissive: 0xffd97a, emissiveIntensity: 0.9, roughness: 0.3,
-    });
-    const head = new THREE.Mesh(new THREE.BoxGeometry(0.45, 0.25, 0.45), headMat);
-    head.position.set(reachSign * 0.7, 3.85, 0);
-    group.add(head);
-
-    group.position.set(x, 0, z);
-    group.userData.type = 'scenery';
-    group.userData.biome = 'city';
-    this.scene.add(group);
-    this.scenery.push(group);
+    const handle = this.instancedScenery.addLamp(x, z);
+    const marker = new THREE.Group();
+    marker.position.set(x, 0, z);
+    marker.userData.type = 'scenery';
+    marker.userData.biome = 'city';
+    marker.userData.instanceHandle = handle;
+    marker.userData.releaseInstance = () => this.instancedScenery.release(handle);
+    // Side-hit collision: pole is thin but lethal. The lamp's reach arm
+    // sticks out toward the road, so the hit zone is wider on the road side.
+    marker.userData.collidable = true;
+    marker.userData.length = 0.5;
+    marker.userData.width  = 1.2;     // wider so the arm + head are covered
+    marker.userData.height = 4.0;
+    marker.userData.kind = 'lamp';
+    this.scenery.push(marker);
   }
 
   _addPalmTree(x, z) {
-    const group = new THREE.Group();
-
-    // Single cylinder trunk leaning ~15°. We attach it to a tilt pivot so the
-    // whole crown leans with the trunk.
-    const tilt = new THREE.Group();
-    const leanRad = (12 + Math.random() * 8) * Math.PI / 180; // 12-20°
-    const leanAxis = Math.random() < 0.5 ? -1 : 1;            // lean left or right
-    tilt.rotation.z = leanAxis * leanRad;
-    group.add(tilt);
-
-    const trunkH = 5 + Math.random() * 1.2;
-    const trunk = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.18, 0.24, trunkH, 8),
-      new THREE.MeshStandardMaterial({ color: 0x8b6a3a, roughness: 0.9 }),
-    );
-    trunk.position.y = trunkH / 2;
-    trunk.castShadow = true;
-    tilt.add(trunk);
-
-    // Crown of 4-6 flat elongated fronds fanning out from the top.
-    const frondCount = 4 + Math.floor(Math.random() * 3);
-    const frondMat = new THREE.MeshStandardMaterial({
-      color: 0x3cb371, roughness: 0.75, side: THREE.DoubleSide,
-    });
-    const topY = trunkH;
-    for (let i = 0; i < frondCount; i++) {
-      const angle = (i / frondCount) * Math.PI * 2 + (Math.random() - 0.5) * 0.3;
-      const frondGeo = new THREE.PlaneGeometry(0.7, 2.6);
-      frondGeo.translate(0, 1.2, 0);
-      const frond = new THREE.Mesh(frondGeo, frondMat);
-      frond.position.set(0, topY, 0);
-      frond.rotation.y = angle;
-      frond.rotation.x = -1.0;
-      frond.rotation.z = (Math.random() - 0.5) * 0.2;
-      frond.castShadow = true;
-      tilt.add(frond);
-    }
-
-    // Cluster of coconuts at the crown
-    const coconutMat = new THREE.MeshStandardMaterial({ color: 0x4a2a14, roughness: 0.6 });
-    for (let i = 0; i < 3; i++) {
-      const c = new THREE.Mesh(new THREE.SphereGeometry(0.14, 8, 8), coconutMat);
-      const a = (i / 3) * Math.PI * 2;
-      c.position.set(Math.cos(a) * 0.22, topY - 0.05, Math.sin(a) * 0.22);
-      tilt.add(c);
-    }
-
-    group.position.set(x, 0, z);
-    group.rotation.y = Math.random() * Math.PI * 2;
-    group.userData.type = 'scenery';
-    group.userData.biome = 'tropical';
-    this.scene.add(group);
-    this.scenery.push(group);
+    const handle = this.instancedScenery.addPalm(x, z);
+    const marker = new THREE.Group();
+    marker.position.set(x, 0, z);
+    marker.userData.type = 'scenery';
+    marker.userData.biome = 'tropical';
+    marker.userData.instanceHandle = handle;
+    marker.userData.releaseInstance = () => this.instancedScenery.release(handle);
+    // Side-hit collision: thin trunk, fronds high up. Player can clear by
+    // jumping past trunk height; below that, hitting the trunk = death.
+    marker.userData.collidable = true;
+    marker.userData.length = 0.6;
+    marker.userData.width  = 0.6;
+    marker.userData.height = 4.5;
+    marker.userData.kind = 'tree';
+    this.scenery.push(marker);
   }
 
   _addTikiHut(x, z) {
@@ -2285,8 +2587,8 @@ export class Game {
         (i - segments / 2) * (d * 0.9) + (Math.random() - 0.5) * 0.5,
       );
       chunk.rotation.y = (Math.random() - 0.5) * 0.4;
-      chunk.castShadow = true;
-      chunk.receiveShadow = true;
+      chunk.castShadow = false;
+      chunk.receiveShadow = false;
       group.add(chunk);
     }
 
@@ -2382,8 +2684,10 @@ export class Game {
         i === 0 ? 0 : (Math.random() - 0.5) * 0.5,
       );
       rock.rotation.y = Math.random() * Math.PI * 2;
-      rock.castShadow = true;
-      rock.receiveShadow = true;
+      // Phase 5 perf: rocks/cliff-chunks are tiny or sit far back; cast
+      // shadows contribute nothing visually at run speed.
+      rock.castShadow = false;
+      rock.receiveShadow = false;
       group.add(rock);
     }
 
@@ -2427,10 +2731,12 @@ export class Game {
       color: s.color, roughness: 0.45, metalness: 0.4,
     });
 
-    // Body
+    // Body — Phase 5 perf: lane vehicles are short and parked; their cast
+    // shadows fold into the ground darkening from the directional sun
+    // and don't add visual signal at run speed.
     const body = new THREE.Mesh(new THREE.BoxGeometry(s.W, s.H, s.L), bodyMat);
     body.position.y = s.H / 2;
-    body.castShadow = true;
+    body.castShadow = false;
     group.add(body);
 
     if (type === 'taxi') {
@@ -2440,7 +2746,7 @@ export class Game {
         new THREE.MeshStandardMaterial({ color: s.cabin.c, roughness: 0.4, metalness: 0.4 }),
       );
       cab.position.set(0, s.H + s.cabin.H / 2, -0.05);
-      cab.castShadow = true;
+      cab.castShadow = false;
       group.add(cab);
       // Windshield strip
       const win = new THREE.Mesh(
@@ -2470,7 +2776,7 @@ export class Game {
         new THREE.MeshStandardMaterial({ color: s.cabin.c, roughness: 0.4 }),
       );
       cab.position.set(0, s.H + s.cabin.H / 2, -0.1);
-      cab.castShadow = true;
+      cab.castShadow = false;
       group.add(cab);
       // Window band
       const win = new THREE.Mesh(
@@ -2493,7 +2799,7 @@ export class Game {
         new THREE.MeshStandardMaterial({ color: s.cabin.c, roughness: 0.4, metalness: 0.4 }),
       );
       cab.position.set(0, s.H + s.cabin.H / 2, -s.L / 2 + s.cabin.L / 2 + 0.02);
-      cab.castShadow = true;
+      cab.castShadow = false;
       group.add(cab);
       // Cargo box in back
       const cargo = new THREE.Mesh(
@@ -2501,7 +2807,7 @@ export class Game {
         new THREE.MeshStandardMaterial({ color: s.cargo.c, roughness: 0.7 }),
       );
       cargo.position.set(0, s.H + s.cargo.H / 2, s.L / 2 - s.cargo.L / 2 - 0.02);
-      cargo.castShadow = true;
+      cargo.castShadow = false;
       group.add(cargo);
       // Cab windshield
       const win = new THREE.Mesh(
@@ -2518,7 +2824,7 @@ export class Game {
         bodyMat,
       );
       tallBody.position.y = (s.H + 0.9) / 2;
-      tallBody.castShadow = true;
+      tallBody.castShadow = false;
       group.add(tallBody);
       // White stripe with window indentations
       const stripeMat = new THREE.MeshStandardMaterial({ color: 0xfafafa, roughness: 0.6 });
@@ -2554,7 +2860,7 @@ export class Game {
         bodyMat,
       );
       tallBody.position.y = (s.H + 0.6) / 2;
-      tallBody.castShadow = true;
+      tallBody.castShadow = false;
       group.add(tallBody);
       // Black stripe along the side
       const stripe = new THREE.Mesh(
@@ -2798,7 +3104,7 @@ export class Game {
       const cabMat = new THREE.MeshStandardMaterial({ color, roughness: 0.4, metalness: 0.5 });
       const cab = new THREE.Mesh(cabGeo, cabMat);
       cab.position.set(0, bodyH + 0.5, -1.5);
-      cab.castShadow = true;
+      cab.castShadow = false;
       group.add(cab);
     }
 
@@ -3067,6 +3373,10 @@ export class Game {
   }
 
   _spawnRamp(z) {
+    // Project-wide rule: never deploy a ramp on a cross-street.
+    const safeZ = this._clampToSafeZ(z, 8);
+    if (safeZ == null) return;
+    z = safeZ;
     // Spec: ramps are placed in the center lane.
     const lane = 0;
     const x = lane * GAME_CONFIG.LANE_WIDTH;
@@ -3136,7 +3446,7 @@ export class Game {
     wedgeGeo.computeVertexNormals();
 
     const wedgeMat = new THREE.MeshStandardMaterial({
-      color: 0xF5A623, roughness: 0.55, metalness: 0.15,
+      color: 0xFFD700, roughness: 0.55, metalness: 0.15,
     });
     const wedge = new THREE.Mesh(wedgeGeo, wedgeMat);
     wedge.castShadow = true;
@@ -3341,6 +3651,8 @@ export class Game {
   }
 
   _spawnSkyObject(type, opts = {}) {
+    // Phase 4 perf: hard cap so the sky never hosts more than 6 props.
+    if (this.skyObjects.length >= 6) return;
     const far = opts.far !== undefined ? opts.far : Math.random() < 0.5;
     const low = !!opts.low;
     const flyby = !!opts.flyby;
@@ -3721,6 +4033,7 @@ export class Game {
     this._lowPassTimer = GAME_CONFIG.LOW_PASS_INTERVAL_MIN
       + Math.random() * (GAME_CONFIG.LOW_PASS_INTERVAL_MAX - GAME_CONFIG.LOW_PASS_INTERVAL_MIN);
     this._droneSpawnZ = GAME_CONFIG.DRONE_SPAWN_START_DISTANCE;
+    this._droneAlertCooldownUntil = 0;
     this._setHazardWarning('left', false);
     this._setHazardWarning('right', false);
     this._setHazardWarning('center', false);
@@ -3985,7 +4298,9 @@ export class Game {
     const armMat = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.7 });
 
     const body = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.2, 0.5), bodyMat);
-    body.castShadow = true;
+    // Phase 5 perf: drone is high above ground and outside the directional
+    // shadow camera frustum — its cast shadow contributes nothing.
+    body.castShadow = false;
     group.add(body);
 
     // Four diagonal arms + rotors
@@ -4050,6 +4365,8 @@ export class Game {
   }
 
   _spawnDrone(z) {
+    // Phase 4 perf: hard cap so a long run never piles drones up.
+    if (this.drones.length >= 4) return;
     const drone = this._buildDrone();
     drone.position.set(
       (Math.random() - 0.5) * 8,
@@ -4099,6 +4416,18 @@ export class Game {
         }
         this._droneSpawnZ += GAME_CONFIG.DRONE_SPAWN_GAP_MIN
           + Math.random() * (GAME_CONFIG.DRONE_SPAWN_GAP_MAX - GAME_CONFIG.DRONE_SPAWN_GAP_MIN);
+        // 5-second cooldown on drone_alert — even if multiple drone batches
+        // spawn rapidly, the alert (and its chained approach) only fires
+        // once per cooldown window so the audio doesn't spam.
+        const now = performance.now();
+        if (!this._droneAlertCooldownUntil || now >= this._droneAlertCooldownUntil) {
+          this._droneAlertCooldownUntil = now + 5000;
+          this.sounds.play('drone_alert');
+          // Chain the approach sound 1.5 s later — only if still playing.
+          setTimeout(() => {
+            if (this.state === 'playing') this.sounds.play('drone_approch');
+          }, 1500);
+        }
       }
     }
   }
@@ -4163,11 +4492,16 @@ export class Game {
     const py = this.player.position.y;
     const pz = this.player.position.z;
     if (py <= 0.5) return null;
+    // Phase 3 perf: cheap squared-distance early-outs on Z (cheapest axis
+    // since most hazards spawn far ahead). Each loop bails on the FIRST
+    // axis-distance check before doing any 3D distance math.
 
     for (const r of this.rockets) {
-      const dx = r.position.x - px;
-      const dy = r.position.y - py;
       const dz = r.position.z - pz;
+      if (dz > 1.7 || dz < -1.7) continue;
+      const dx = r.position.x - px;
+      if (dx > 1.7 || dx < -1.7) continue;
+      const dy = r.position.y - py;
       if (dx * dx + dy * dy + dz * dz < 1.7 * 1.7) return 'rocket';
     }
     for (const p of this.lowPassPlanes) {
@@ -4177,17 +4511,21 @@ export class Game {
       if (dx < 5 && dy < 1.5) return 'airplane';
     }
     for (const d of this.drones) {
-      const dx = d.position.x - px;
-      const dy = d.position.y - py;
       const dz = d.position.z - pz;
+      if (dz > 1.3 || dz < -1.3) continue;
+      const dx = d.position.x - px;
+      if (dx > 1.3 || dx < -1.3) continue;
+      const dy = d.position.y - py;
       if (dx * dx + dy * dy + dz * dz < 1.3 * 1.3) return 'drone';
     }
     // Balloons (still tracked in skyObjects)
     for (const obj of this.skyObjects) {
       if (obj.userData.skyKind !== 'balloon') continue;
-      const dx = obj.position.x - px;
-      const dy = obj.position.y - py;
       const dz = obj.position.z - pz;
+      if (dz > 2 || dz < -2) continue;
+      const dx = obj.position.x - px;
+      if (dx > 2 || dx < -2) continue;
+      const dy = obj.position.y - py;
       if (dx * dx + dy * dy + dz * dz < 2.0 * 2.0) return 'balloon';
     }
     return null;
@@ -4199,9 +4537,79 @@ export class Game {
     if (this.state !== 'playing') return;
     this._pendingGameOverTitle = title || 'CRASHED!';
     this._stopBgMusic();
+    // Snapshot the crash spot + identify the object that killed us so the
+    // post-death camera can frame BOTH in view.
+    this._crashPos = position.clone();
+    this._killer   = this._findKillerObject(position, hitType);
+    this._deathCamElapsed = 0;
     // Plant a flag at the death spot showing the distance reached
     this._placeDeathFlag(position, this.distance);
     this._explode(position.clone(), hitType || 'car');
+    // SFX: prefer a kind-specific crash variant if defined; fall back to
+    // the generic 'crash' event. e.g. lamp hit → 'crash_lamp' if its pool
+    // has any clips, otherwise 'crash'.
+    const kind = (this._killer && this._killer.kind) || hitType || 'crash';
+    const variant = `crash_${kind}`;
+    if (this.sounds.getSounds(variant).length > 0) this.sounds.play(variant);
+    else this.sounds.play('crash');
+  }
+
+  // Walk the world for the closest object that could have caused the hit.
+  // Returns { kind, pos } where pos is a Vector3 cloned at death time so
+  // the world can keep scrolling without losing the killer reference.
+  _findKillerObject(playerPos, hitType) {
+    let best = null, bestD2 = Infinity;
+    const consider = (kind, x, y, z) => {
+      const dx = x - playerPos.x, dy = y - playerPos.y, dz = z - playerPos.z;
+      const d2 = dx*dx + dy*dy + dz*dz;
+      if (d2 < bestD2) { bestD2 = d2; best = { kind, pos: new THREE.Vector3(x, y, z) }; }
+    };
+    // Scenery (collidable: trees, lamps, rocks)
+    for (const s of this.scenery || []) {
+      if (!s.userData || !s.userData.collidable) continue;
+      if (Math.abs(s.position.z) > 8) continue;
+      consider(s.userData.kind || 'scenery', s.position.x, 0, s.position.z);
+    }
+    // Lane obstacles (parked cars / boulders)
+    for (const o of this.obstacles || []) {
+      if (Math.abs(o.position.z) > 8) continue;
+      consider(o.userData.vehicleType ? 'car' : 'boulder',
+               o.position.x, o.position.y || 0, o.position.z);
+    }
+    // Cross-street vehicles
+    for (const street of this.crossStreets || []) {
+      if (Math.abs(street.position.z) > 6) continue;
+      for (const car of street.userData.cars || []) {
+        const cz = street.position.z + (car.position.z || 0);
+        if (Math.abs(cz - playerPos.z) > 5) continue;
+        consider('car', car.position.x, 0, cz);
+      }
+    }
+    // Mountain-split high-rise
+    for (const m of this.mountainBlocks || []) {
+      if (m.userData.kind !== 'building') continue;
+      if (Math.abs(m.position.z) > 14) continue;
+      consider('building', m.position.x, 0, m.position.z);
+    }
+    // Aerial — drones, rockets, low-pass planes, balloons
+    for (const d of this.drones || []) {
+      if (Math.abs(d.position.z) > 6) continue;
+      consider('drone', d.position.x, d.position.y, d.position.z);
+    }
+    for (const r of this.rockets || []) {
+      if (Math.abs(r.position.z) > 6) continue;
+      consider('rocket', r.position.x, r.position.y, r.position.z);
+    }
+    for (const obj of this.skyObjects || []) {
+      if (obj.userData.skyKind !== 'balloon') continue;
+      if (Math.abs(obj.position.z) > 6) continue;
+      consider('balloon', obj.position.x, obj.position.y, obj.position.z);
+    }
+    // Fallback if nothing was nearby — point the cam at the hint
+    if (!best) {
+      best = { kind: hitType || 'crash', pos: playerPos.clone() };
+    }
+    return best;
   }
 
   _placeDeathFlag(position, distance) {
@@ -4437,13 +4845,15 @@ export class Game {
       });
     }
 
-    // Schedule the actual game-over screen 1.5s later
+    // Schedule the actual game-over screen 4.5s later — gives the orbit
+    // camera time to complete a full 360° revolution around the killer
+    // before the UI takes over.
     setTimeout(() => {
       if (this.state === 'exploding') {
         this._cleanupExplosion();
         this._showGameOverScreen(this._pendingGameOverTitle || 'Game Over!');
       }
-    }, 1500);
+    }, 4500);
   }
 
   _addSecondaryExplosion(pos) {
@@ -4538,22 +4948,50 @@ export class Game {
       }
     }
 
-    // World keeps scrolling briefly then slows to a stop
+    // World decelerates very fast (0.15s) so the killer object stays in
+    // frame instead of scrolling past the dead player.
     this._explosionDecel += delta;
-    const slowFactor = Math.max(0, 1 - this._explosionDecel / 0.7);
+    const slowFactor = Math.max(0, 1 - this._explosionDecel / 0.15);
     const moveZ = this.speed * delta * slowFactor;
     if (moveZ > 0) this._moveWorld(moveZ);
 
-    // Camera shake
-    if (this.shakeTimer > 0) {
-      this.shakeTimer -= delta;
-      const k = Math.max(0, this.shakeTimer / 0.8);
-      const m = this.shakeMagnitude * k;
-      this.camera.position.set(
-        this.cameraGroundOffset.x + (Math.random() - 0.5) * m * 2,
-        this.cameraGroundOffset.y + (Math.random() - 0.5) * m * 2,
-        this.cameraGroundOffset.z + (Math.random() - 0.5) * m,
+    // Death cam — hovers around the killer object at a constant radius and
+    // height, slowly orbiting 360°. The camera is continuously chased
+    // toward a moving "orbit point" so the entry from the chase position
+    // is smooth (no two-phase logic needed) and the steady state is a
+    // clean circular hover.
+    this._deathCamElapsed = (this._deathCamElapsed || 0) + delta;
+    if (this._crashPos && this._killer) {
+      const ORBIT_RADIUS = 8;            // m, constant hover distance
+      const ORBIT_HEIGHT = 4;            // m above the killer's base
+      const ORBIT_SPEED  = 1.5;          // rad/s → full revolution in ~4.2 s
+      const angle = this._deathCamElapsed * ORBIT_SPEED;
+      const orbitTarget = new THREE.Vector3(
+        this._killer.pos.x + Math.cos(angle) * ORBIT_RADIUS,
+        this._killer.pos.y + ORBIT_HEIGHT,
+        this._killer.pos.z + Math.sin(angle) * ORBIT_RADIUS,
       );
+      // Smooth lerp from current camera pose into the orbit. 5/s converges
+      // to the orbit point in ~0.4 s, after which the camera tracks the
+      // moving orbit point exactly.
+      this.camera.position.lerp(orbitTarget, Math.min(1, 5 * delta));
+      // Always look at the killer with a small upward bias so the camera
+      // gently tilts down on tall props (lamps) and up on flat ones (rocks).
+      this.camera.lookAt(
+        this._killer.pos.x,
+        this._killer.pos.y + 1.2,
+        this._killer.pos.z,
+      );
+
+      // Keep a subtle shake layered on top for the first 0.5 s
+      if (this.shakeTimer > 0) {
+        this.shakeTimer -= delta;
+        const k = Math.max(0, this.shakeTimer / 0.8);
+        const m = this.shakeMagnitude * k * 0.6;
+        this.camera.position.x += (Math.random() - 0.5) * m * 2;
+        this.camera.position.y += (Math.random() - 0.5) * m * 2;
+        this.camera.position.z += (Math.random() - 0.5) * m;
+      }
     }
   }
 
@@ -4583,6 +5021,10 @@ export class Game {
   }
 
   _spawnPlaceholderCoin(z) {
+    // Project-wide rule: never deploy a coin on a cross-street.
+    const safeZ = this._clampToSafeZ(z, 4);
+    if (safeZ == null) return;
+    z = safeZ;
     const lane = Math.floor(Math.random() * 3) - 1;
     const x = lane * GAME_CONFIG.LANE_WIDTH;
 
@@ -4617,10 +5059,16 @@ export class Game {
     this.startTime = performance.now();
     this.clock.start();
     this._playBgMusic();
+    this.sounds.play('game_start');
   }
 
   _playBgMusic() {
     if (!this.bgMusic) return;
+    // Settings may have music disabled — honor it.
+    if (this.settings && this.settings.musicEnabled === false) {
+      this._musicShouldPlay = false;
+      return;
+    }
     // Rewind so each new round starts at the top of the track
     try { this.bgMusic.currentTime = 0; } catch (e) { /* not yet loaded */ }
     this._musicShouldPlay = true;
@@ -4635,6 +5083,50 @@ export class Game {
     this._musicShouldPlay = false;
     this.bgMusic.pause();
     try { this.bgMusic.currentTime = 0; } catch (e) { /* ignore */ }
+  }
+
+  // Force the bg-music HTMLAudioElement to fully buffer + decode while
+  // still on the loading screen, so the first play() (called from the
+  // PLAY-button gesture) starts instantly on mobile instead of stalling
+  // for the network/decode pipeline.
+  _preloadBgMusic() {
+    if (!this.bgMusic) return Promise.resolve();
+    if (this.bgMusic.readyState >= 4) return Promise.resolve();   // HAVE_ENOUGH_DATA
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = () => { if (!done) { done = true; cleanup(); resolve(); } };
+      const cleanup = () => {
+        this.bgMusic.removeEventListener('canplaythrough', finish);
+        this.bgMusic.removeEventListener('canplay',        finish);
+        this.bgMusic.removeEventListener('loadeddata',     finish);
+        this.bgMusic.removeEventListener('error',          finish);
+        clearTimeout(timer);
+      };
+      this.bgMusic.addEventListener('canplaythrough', finish, { once: true });
+      this.bgMusic.addEventListener('canplay',        finish, { once: true });
+      this.bgMusic.addEventListener('loadeddata',     finish, { once: true });
+      this.bgMusic.addEventListener('error',          finish, { once: true });
+      const timer = setTimeout(finish, 12000);
+      try { this.bgMusic.load(); } catch (e) { finish(); }
+    });
+  }
+
+  // Temporarily lower the bg-music volume — called via the SoundLibrary
+  // onDuck hook for events configured in EVENT_DUCK. Re-triggers extend
+  // (don't stack) the dip duration.
+  //   toFraction = 0..1 of the user's music volume (0 = silence)
+  //   ms         = how long to hold the dip; restores after that
+  _duckBgMusic(toFraction, ms) {
+    if (!this.bgMusic || !this.settings.musicEnabled) return;
+    const base = this.settings.musicVolume;
+    this.bgMusic.volume = Math.max(0, base * Math.max(0, Math.min(1, toFraction)));
+    if (this._duckRestoreTimer) clearTimeout(this._duckRestoreTimer);
+    this._duckRestoreTimer = setTimeout(() => {
+      if (this.bgMusic && this.settings.musicEnabled) {
+        this.bgMusic.volume = this.settings.musicVolume;
+      }
+      this._duckRestoreTimer = null;
+    }, Math.max(0, ms));
   }
 
   restart(opts = {}) {
@@ -4659,6 +5151,9 @@ export class Game {
       this.deathFlag = null;
     }
     this._explosionDecel = 0;
+    this._crashPos = null;
+    this._killer = null;
+    this._deathCamElapsed = 0;
     if (this.winScreenEl) this.winScreenEl.style.display = 'none';
     this.startTime = performance.now();
     // Reset state
@@ -4675,6 +5170,8 @@ export class Game {
     this._cameraAirLerp = 0;
     this._cameraHoldTimer = 0;
     this._cameraXShift = 0;
+    this._smoothPlayerX = 0;
+    this._smoothPlayerY = 0;
     this._parachuteArmed = false;
     this.parachuteOpen = false;
     this.parachuteTimer = 0;
@@ -4748,6 +5245,9 @@ export class Game {
     this.clock.start();
     // Music restarts from the top with each new round
     this._playBgMusic();
+    // Fire game_start every restart too — picks one clip at random from
+    // the pool just like the initial PLAY does.
+    this.sounds.play('game_start');
   }
 
   gameOver(title) {
@@ -4774,17 +5274,23 @@ export class Game {
     switch (direction) {
       case 'up':
         if (!this.isJumping && !this.airborneFromRamp) {
-          // Ground jump
+          // Ground jump — free.
           this.isJumping = true;
           this.jumpVelocity = GAME_CONFIG.JUMP_FORCE;
           this.canDoubleJump = true;
-        } else if (this.canDoubleJump) {
-          // Double jump (only once per airborne session)
-          this.canDoubleJump = false;
+          this.sounds.play('jump');
+        } else if (this.parachuteEnergy >= GAME_CONFIG.MULTI_JUMP_COST) {
+          // Multi-jump in air — UNLIMITED as long as energy lasts. Each
+          // press costs MULTI_JUMP_COST. Holding the press also arms the
+          // parachute, which opens on the next frame if jumpHeld stays
+          // true and shares the same energy pool while gliding.
+          this.parachuteEnergy -= GAME_CONFIG.MULTI_JUMP_COST;
           this.jumpVelocity = Math.max(this.jumpVelocity, GAME_CONFIG.DOUBLE_JUMP_FORCE);
-          // Arm parachute opening — opens on the next frame if jumpHeld stays
-          // true. (Released = no parachute.)
           this._parachuteArmed = true;
+          this.sounds.play('double_jump');
+        } else {
+          // Out of energy — flash the bar so the player sees why
+          this._flashChuteEmpty();
         }
         break;
       case 'down':
@@ -4805,6 +5311,7 @@ export class Game {
     }
     this.parachuteOpen = true;
     this.parachuteTimer = 0;
+    this.sounds.play('parachute');
   }
 
   _closeParachute() {
@@ -5043,19 +5550,33 @@ export class Game {
     const zoomLerpSpeed = wantAir > this._cameraAirLerp ? 3 : 10;
     this._cameraAirLerp += (wantAir - this._cameraAirLerp)
                          * Math.min(1, zoomLerpSpeed * delta);
-    const camOffset = new THREE.Vector3().lerpVectors(
+    const tpOffset = new THREE.Vector3().lerpVectors(
       this.cameraGroundOffset, this.cameraAirOffset, this._cameraAirLerp,
     );
-    const camLook = new THREE.Vector3().lerpVectors(
+    const tpLook = new THREE.Vector3().lerpVectors(
       this.cameraGroundLook, this.cameraAirLook, this._cameraAirLerp,
     );
+    // Settings: scale the 3rd-person offset by the user's distance slider
+    // (0.5x..2x). 1st-person preset overrides when toggled on — eye sits
+    // just in front of the player at head height, looking forward.
+    const distMul = (this.settings && this.settings.cameraDistance) || 1.0;
+    tpOffset.x *= distMul; tpOffset.y *= distMul; tpOffset.z *= distMul;
+    const fpOffset = new THREE.Vector3(0, 1.25, 1.4);
+    const fpLook   = new THREE.Vector3(0, 1.15, 18);
+    const fpBlend  = (this.settings && this.settings.firstPerson) ? 1 : 0;
+    const camOffset = new THREE.Vector3().lerpVectors(tpOffset, fpOffset, fpBlend);
+    const camLook   = new THREE.Vector3().lerpVectors(tpLook,   fpLook,   fpBlend);
+    // Hide the player mesh in first-person so it doesn't fill the screen.
+    if (this.player) this.player.visible = fpBlend < 0.7;
 
-    // Precise lateral follow — the camera tracks the player's X exactly so
-    // every small left/right turn is mirrored. Both the camera position and
-    // the look-at point shift by the full playerX, keeping the player dead
-    // centered in frame at all times.
-    camOffset.x += this.playerX;
-    camLook.x   += this.playerX;
+    // Floating chase camera — smoothed lateral follow. The camera-tracked X
+    // lerps toward the real playerX at 5/s, giving a gentle ~200 ms lag that
+    // reads as a hand-held / drone-cam float. Both camera AND look-at use
+    // the smoothed value so the player still ends up in frame.
+    const followLerp = Math.min(1, 5 * delta);
+    this._smoothPlayerX += (this.playerX - this._smoothPlayerX) * followLerp;
+    camOffset.x += this._smoothPlayerX;
+    camLook.x   += this._smoothPlayerX;
     // Around the high-rise the camera also leans an EXTRA bit in the same
     // direction (on top of the precise follow), to clearly read which side
     // the player took. This extra lean fades out once the corridor ends.
@@ -5067,16 +5588,26 @@ export class Game {
     camOffset.x += this._cameraXShift;
     camLook.x   += this._cameraXShift * 0.65;
 
-    // Vertical follow — camera rises with the player on a jump and falls
-    // back down. Look-at follows at 85 % of player altitude, so as the player
-    // climbs the camera tilts slightly DOWNWARD over the world; this is what
-    // makes the city look small from up high (correct perspective: angular
-    // size of distant ground geometry shrinks as the camera rises). A small
-    // Z-pullback at high altitude amplifies the aerial-view feel.
-    const followY = Math.max(0, this.playerY);
+    // Vertical follow — same floaty smoothing as the lateral follow. Camera
+    // rises with the player's jump arc and glides back down with a small
+    // lag instead of snapping. Look-at trails at 85 % so the camera tilts
+    // slightly downward as the player climbs, selling the aerial view.
+    this._smoothPlayerY += (Math.max(0, this.playerY) - this._smoothPlayerY) * followLerp;
+    const followY = this._smoothPlayerY;
     camOffset.y += followY;
     camLook.y   += followY * 0.85;
     camOffset.z -= followY * 0.25;
+
+    // Subtle floaty bob — gentle sine waves so the camera reads as
+    // hand-held / drone-cam rather than a perfectly rigid mount. Tiny
+    // amplitude so it's felt, not noticed. Skipped in 1st-person where
+    // it would induce motion sickness.
+    if (fpBlend < 0.5) {
+      const bobT = performance.now() * 0.001;
+      camOffset.y += Math.sin(bobT * 1.4) * 0.08;
+      camOffset.x += Math.cos(bobT * 1.1) * 0.05;
+      camOffset.z += Math.sin(bobT * 0.7) * 0.04;
+    }
 
     // Approaching a mountain split? Briefly raise the camera so the fork in
     // the path reads clearly.
@@ -5198,6 +5729,10 @@ export class Game {
     this.ramps.forEach(r => { r.position.z -= moveZ; });
     this.collectibles.forEach(c => { c.position.z -= moveZ; });
     this.scenery.forEach(s => { s.position.z -= moveZ; });
+    // Phase 1 perf: scroll the instanced-scenery batch root in lockstep
+    // with the marker .position.z values above so trees/lamps move with
+    // the world without per-instance matrix updates.
+    if (this.instancedScenery) this.instancedScenery.scroll(moveZ);
     if (this.finishLineGroup) this.finishLineGroup.position.z -= moveZ;
     if (this.mountainBlocks) {
       for (const m of this.mountainBlocks) m.position.z -= moveZ;
@@ -5228,81 +5763,110 @@ export class Game {
     }
   }
 
-  _spawnConfetti(originZ) {
-    const COUNT = 220;
+  // Phase 4 perf: confetti pool — one InstancedMesh, 80 slots (was 220
+  // individual Mesh+Geometry+Material). Each particle just rewrites its
+  // slot matrix per frame; one draw call total instead of ~220.
+  _ensureConfettiPool() {
+    if (this._confettiPool) return;
+    const MAX = 80;
+    const geo = new THREE.PlaneGeometry(0.22, 0.14);
+    const mat = new THREE.MeshStandardMaterial({
+      side: THREE.DoubleSide, vertexColors: false, roughness: 0.7,
+    });
+    const mesh = new THREE.InstancedMesh(geo, mat, MAX);
+    mesh.frustumCulled = false;
+    // Color each slot once at construction; varying via setColorAt.
     const colors = [0xff3030, 0x4cc6ff, 0xffd23f, 0x35d24a, 0xffffff, 0xff8a3c, 0xa06cd5];
-    for (let i = 0; i < COUNT; i++) {
-      const color = colors[Math.floor(Math.random() * colors.length)];
-      const mat = new THREE.MeshStandardMaterial({
-        color, side: THREE.DoubleSide, transparent: true, opacity: 1, roughness: 0.7,
-      });
-      const w = 0.18 + Math.random() * 0.18;
-      const h = 0.10 + Math.random() * 0.10;
-      const piece = new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat);
-      piece.position.set(
-        (Math.random() - 0.5) * 6,
-        2 + Math.random() * 2,
-        (originZ != null ? originZ : 0) + (Math.random() - 0.5) * 4,
-      );
-      piece.rotation.set(Math.random() * 6, Math.random() * 6, Math.random() * 6);
-      const v = new THREE.Vector3(
-        (Math.random() - 0.5) * 6,
-        8 + Math.random() * 8,            // shoot upward
-        (Math.random() - 0.5) * 6,
-      );
-      const av = new THREE.Vector3(
-        (Math.random() - 0.5) * 8,
-        (Math.random() - 0.5) * 8,
-        (Math.random() - 0.5) * 8,
-      );
-      this.scene.add(piece);
-      this.confetti.push({
-        mesh: piece, velocity: v, angularVelocity: av,
+    const c = new THREE.Color();
+    for (let i = 0; i < MAX; i++) {
+      c.setHex(colors[i % colors.length]);
+      mesh.setColorAt(i, c);
+      mesh.setMatrixAt(i, new THREE.Matrix4().makeTranslation(0, -10000, 0));
+    }
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    mesh.instanceMatrix.needsUpdate = true;
+    this.scene.add(mesh);
+    this._confettiPool = { mesh, MAX };
+  }
+
+  _spawnConfetti(originZ) {
+    this._ensureConfettiPool();
+    const MAX = this._confettiPool.MAX;
+    const startZ = originZ != null ? originZ : 0;
+    for (let i = 0; i < MAX; i++) {
+      // Reuse any free slot; otherwise overwrite the oldest.
+      if (this.confetti[i] && this.confetti[i].life > 0) continue;
+      this.confetti[i] = {
+        slot: i,
+        x: (Math.random() - 0.5) * 6,
+        y: 2 + Math.random() * 2,
+        z: startZ + (Math.random() - 0.5) * 4,
+        rx: Math.random() * 6, ry: Math.random() * 6, rz: Math.random() * 6,
+        vx: (Math.random() - 0.5) * 6,
+        vy: 8 + Math.random() * 8,
+        vz: (Math.random() - 0.5) * 6,
+        avx: (Math.random() - 0.5) * 8,
+        avy: (Math.random() - 0.5) * 8,
+        avz: (Math.random() - 0.5) * 8,
         life: 4.0 + Math.random() * 2,
         maxLife: 4.0 + Math.random() * 2,
         gravity: 9.8,
         drift: (Math.random() - 0.5) * 1.5,
-      });
+      };
     }
   }
 
   _updateConfetti(delta) {
-    if (!this.confetti || this.confetti.length === 0) return;
-    for (let i = this.confetti.length - 1; i >= 0; i--) {
+    if (!this.confetti || this.confetti.length === 0 || !this._confettiPool) return;
+    const pool = this._confettiPool;
+    const tmpM = new THREE.Matrix4();
+    const tmpQ = new THREE.Quaternion();
+    const tmpE = new THREE.Euler();
+    const tmpV = new THREE.Vector3();
+    const tmpS = new THREE.Vector3();
+    let dirty = false;
+    for (let i = 0; i < this.confetti.length; i++) {
       const p = this.confetti[i];
+      if (!p) continue;
+      if (p.life <= 0) continue;
       p.life -= delta;
       if (p.life <= 0) {
-        this.scene.remove(p.mesh);
-        if (p.mesh.geometry) p.mesh.geometry.dispose();
-        if (p.mesh.material) p.mesh.material.dispose();
-        this.confetti.splice(i, 1);
+        // Hide the slot instead of allocating
+        tmpM.makeTranslation(0, -10000, 0);
+        pool.mesh.setMatrixAt(p.slot, tmpM);
+        dirty = true;
         continue;
       }
-      p.velocity.y -= p.gravity * delta;
-      p.velocity.x += p.drift * delta;
-      p.mesh.position.x += p.velocity.x * delta;
-      p.mesh.position.y += p.velocity.y * delta;
-      p.mesh.position.z += p.velocity.z * delta;
-      p.mesh.rotation.x += p.angularVelocity.x * delta;
-      p.mesh.rotation.y += p.angularVelocity.y * delta;
-      p.mesh.rotation.z += p.angularVelocity.z * delta;
-      if (p.mesh.position.y < 0.05) {
-        p.mesh.position.y = 0.05;
-        p.velocity.y *= -0.25;
-        p.velocity.x *= 0.8;
-        p.velocity.z *= 0.8;
+      p.vy -= p.gravity * delta;
+      p.vx += p.drift * delta;
+      p.x += p.vx * delta; p.y += p.vy * delta; p.z += p.vz * delta;
+      p.rx += p.avx * delta; p.ry += p.avy * delta; p.rz += p.avz * delta;
+      if (p.y < 0.05) {
+        p.y = 0.05;
+        p.vy *= -0.25; p.vx *= 0.8; p.vz *= 0.8;
       }
+      // Fade by SCALING DOWN over the last 25 % of life (no per-particle
+      // material — opacity is fixed on the shared material).
       const t = p.life / p.maxLife;
-      if (p.mesh.material) p.mesh.material.opacity = Math.max(0, t);
+      const scale = t > 0.25 ? 1 : (t / 0.25);
+      tmpE.set(p.rx, p.ry, p.rz); tmpQ.setFromEuler(tmpE);
+      tmpV.set(p.x, p.y, p.z);
+      tmpS.set(scale, scale, scale);
+      tmpM.compose(tmpV, tmpQ, tmpS);
+      pool.mesh.setMatrixAt(p.slot, tmpM);
+      dirty = true;
     }
+    if (dirty) pool.mesh.instanceMatrix.needsUpdate = true;
   }
 
   _clearConfetti() {
     if (!this.confetti) return;
-    for (const p of this.confetti) {
-      this.scene.remove(p.mesh);
-      if (p.mesh.geometry) p.mesh.geometry.dispose();
-      if (p.mesh.material) p.mesh.material.dispose();
+    if (this._confettiPool) {
+      const tmpM = new THREE.Matrix4().makeTranslation(0, -10000, 0);
+      for (let i = 0; i < this._confettiPool.MAX; i++) {
+        this._confettiPool.mesh.setMatrixAt(i, tmpM);
+      }
+      this._confettiPool.mesh.instanceMatrix.needsUpdate = true;
     }
     this.confetti = [];
     this._confettiSpawned = false;
@@ -5327,6 +5891,7 @@ export class Game {
     if (this.state !== 'playing') return;
     this.state = 'won';
     this._stopBgMusic();
+    this.sounds.play('win');
     if (!this._confettiSpawned) {
       this._spawnConfetti(0);  // confetti at the player's frame (z ≈ 0)
       this._confettiSpawned = true;
@@ -5358,11 +5923,21 @@ export class Game {
   _checkCollisions() {
     const px = this.player.position.x;
     const py = this.player.position.y;
+    // Phase 3 perf: world scrolls so the player is fixed at z=0. Anything
+    // beyond ±NEAR_Z can't possibly overlap. Skip the iteration body for
+    // far objects with a single Math.abs compare at the top of each loop.
+    const NEAR_Z = 8;
+    // If the player is high enough above all ground props (cars, rocks,
+    // tall lamps, ramps, ~6 m max prop height) we can skip ground checks
+    // entirely. Air-time + ramp arc fly safely above everything except
+    // mountain-split high-rises and aerial hazards.
+    const aboveGround = py > 8 && !this.isJumping;
 
     // Ramp hit — launch the player. Player is at z=0; the ramp is at
     // ramp.position.z and extends ±length/2 in Z. Trigger as soon as the
     // player overlaps the ramp footprint within ±1.5 in X.
-    for (const ramp of this.ramps) {
+    if (!aboveGround) for (const ramp of this.ramps) {
+      if (Math.abs(ramp.position.z) > NEAR_Z + 6) continue;  // far → skip
       const halfL = (ramp.userData.length || 10) / 2;
       const insideZ = Math.abs(ramp.position.z) <= halfL + 0.5;
       const dx = Math.abs(ramp.position.x - px);
@@ -5373,6 +5948,27 @@ export class Game {
       }
     }
 
+    // Side-hit collision against the COLLIDABLE mountain-split signs
+    // (caution + stop). Same height-aware rule as scenery — the player
+    // can ramp-jump cleanly over them but a side hit at low altitude
+    // explodes them.
+    if (!this.airborneFromRamp && !aboveGround && this.mountainBlocks) {
+      for (const sign of this.mountainBlocks) {
+        if (!sign.userData.collidable) continue;
+        if (Math.abs(sign.position.z) > NEAR_Z) continue;
+        const halfL = (sign.userData.length || 0.8) / 2 + 0.3;
+        const halfW = (sign.userData.width  || 0.8) / 2 + 0.3;
+        const top   = (sign.userData.height || 2.5);
+        const dz = Math.abs(sign.position.z);
+        const dx = Math.abs(sign.position.x - px);
+        if (dz < halfL && dx < halfW) {
+          if (py >= top - 0.4) continue;
+          this._die(this.player.position, sign.userData.kind || 'boulder', 'CRASHED!');
+          return;
+        }
+      }
+    }
+
     // Mountain-split high-rise collision. The arch is a SAFE corridor — but
     // ONLY if the player ENTERS through the arch (i.e. is centered in the
     // arch X window AND already at the entrance floor altitude or above at
@@ -5380,6 +5976,10 @@ export class Game {
     if (this.mountainBlocks) {
       for (const block of this.mountainBlocks) {
         if (block.userData.kind !== 'building') continue;
+        // Phase 3 perf: skip if the building's CENTER is far away. Use the
+        // building length (≈25) as the near-window so we don't skip while
+        // the player is approaching its front wall.
+        if (Math.abs(block.position.z) > NEAR_Z + 14) continue;
         const halfL = (block.userData.length || 25) / 2;
         const halfW = (block.userData.width  || 6) / 2;
         const dz = block.position.z;
@@ -5451,9 +6051,11 @@ export class Game {
     // read visually, snap playerY up to the obstacle's roof while overlapping
     // — the player rides the surface and falls back off the back.
     // A side hit (coming in below the roof minus the margin) still kills.
-    if (!this.airborneFromRamp) {
+    if (!this.airborneFromRamp && !aboveGround) {
       let onTopOfSomething = false;
       for (const obs of this.obstacles) {
+        // Phase 3 perf: cheap Z-distance early-out before any other math.
+        if (Math.abs(obs.position.z) > NEAR_Z) continue;
         const halfL = (obs.userData.length || 2.5) / 2 + 0.6;
         const halfW = (obs.userData.width  || 1.0) / 2 + 0.5;
         const top   = (obs.userData.height || 1.5);
@@ -5482,16 +6084,40 @@ export class Game {
       this._ridingObstacle = onTopOfSomething;
     }
 
-    // Coin collection
+    // Side-hit collision against COLLIDABLE scenery (trees, lamps, rocks).
+    // Same Z early-out as the other ground loops. The player can clear
+    // these props by jumping above their `height` minus a margin.
+    if (!this.airborneFromRamp && !aboveGround) {
+      for (const s of this.scenery) {
+        if (!s.userData.collidable) continue;
+        if (Math.abs(s.position.z) > NEAR_Z) continue;
+        const halfL = (s.userData.length || 1.0) / 2 + 0.3;
+        const halfW = (s.userData.width  || 1.0) / 2 + 0.3;
+        const top   = (s.userData.height || 2.0);
+        const dz = Math.abs(s.position.z);
+        const dx = Math.abs(s.position.x - px);
+        if (dz < halfL && dx < halfW) {
+          // Cleared the prop's top? Pass safely — sled can fly over.
+          if (py >= top - 0.4) continue;
+          const kind = s.userData.kind || 'boulder';
+          this._die(this.player.position, kind, 'CRASHED!');
+          return;
+        }
+      }
+    }
+
+    // Coin collection — Phase 3 perf: check Z FIRST (cheapest); coin
+    // collection radius is 1.5, so anything past ±2 can't be picked up.
     for (const coin of this.collectibles) {
       if (coin.userData.collected) continue;
       const dz = Math.abs(coin.position.z);
+      if (dz > 2) continue;
       const dx = Math.abs(coin.position.x - px);
-
       if (dz < 1.5 && dx < 1.5) {
         coin.userData.collected = true;
         coin.visible = false;
         this.coins++;
+        this.sounds.play('coin_pickup');
         this.score += 10;
       }
     }
@@ -5504,6 +6130,7 @@ export class Game {
     this.jumpVelocity = GAME_CONFIG.RAMP_JUMP_FORCE;
     this.airTime = 0;
     this.airPeakHeight = this.playerY;
+    this.sounds.play('ramp_launch');
     // Air time of a ballistic jump = 2 * v / g. The full 360° flip eases to
     // exactly 1 revolution over this duration so the penguin lands upright.
     this.flipDuration = 2 * GAME_CONFIG.RAMP_JUMP_FORCE / GAME_CONFIG.GRAVITY;
@@ -5669,12 +6296,9 @@ export class Game {
     this.obstacles.forEach(obs => {
       if (obs.userData.unique) return;
       if (obs.position.z < -20) {
-        let newZ = obs.position.z + 200 + Math.random() * 50;
-        let tries = 0;
-        while (this._zHasCrossStreet(newZ, 5) && tries < 6) {
-          newZ += 12;
-          tries++;
-        }
+        const targetZ = obs.position.z + 200 + Math.random() * 50;
+        const newZ = this._clampToSafeZ(targetZ, 5);
+        if (newZ == null) return;     // No clean Z — leave it behind, don't park on road
         obs.position.z = newZ;
         const newLane = Math.floor(Math.random() * 3) - 1;
         obs.position.x = newLane * GAME_CONFIG.LANE_WIDTH;
@@ -5685,14 +6309,10 @@ export class Game {
     this.ramps.forEach(ramp => {
       if (ramp.userData.unique) return;
       if (ramp.position.z < -20) {
-        let newZ = ramp.position.z + 240 + Math.random() * 80;
-        let tries = 0;
-        while (this._zHasCrossStreet(newZ, 8) && tries < 6) {
-          newZ += 14;
-          tries++;
-        }
+        const targetZ = ramp.position.z + 240 + Math.random() * 80;
+        const newZ = this._clampToSafeZ(targetZ, 8);
+        if (newZ == null) return;
         ramp.position.z = newZ;
-        // Always center lane per spec
         ramp.position.x = 0;
         ramp.userData.lane = 1;
         ramp.userData.id = `ramp_${Math.random().toString(36).slice(2, 9)}`;
@@ -5703,7 +6323,10 @@ export class Game {
     this.collectibles.forEach(coin => {
       if (coin.userData.unique) return;
       if (coin.position.z < -20) {
-        coin.position.z += 200 + Math.random() * 50;
+        const targetZ = coin.position.z + 200 + Math.random() * 50;
+        const safeZ = this._clampToSafeZ(targetZ, 4);
+        if (safeZ == null) return;
+        coin.position.z = safeZ;
         const newLane = Math.floor(Math.random() * 3) - 1;
         coin.position.x = newLane * GAME_CONFIG.LANE_WIDTH;
         coin.userData.collected = false;
@@ -5711,16 +6334,26 @@ export class Game {
       }
     });
 
-    // Recycle scenery — when scenery passes behind us, replace it with a fresh
-    // instance matching the *current* biome rather than just teleporting it.
-    for (let i = this.scenery.length - 1; i >= 0; i--) {
+    // Phase 2 perf: pure pool reuse. Scenery items are NEVER removed,
+    // disposed, or re-created during gameplay — they're just teleported
+    // forward in place. For instanced markers (pine/palm/lamp), the
+    // InstancedMesh matrix is rewritten via moveHandle. For non-instanced
+    // groups (cabin/mid-rise/cliff/etc) the Object3D itself moves.
+    for (let i = 0; i < this.scenery.length; i++) {
       const s = this.scenery[i];
       if (s.position.z < -30) {
-        const side = s.position.x < 0 ? -1 : 1;
-        const newZ = s.position.z + 400 + Math.random() * 8;
-        this.scene.remove(s);
-        this.scenery.splice(i, 1);
-        this._addSideDecor(side, newZ, this.currentBiome);
+        let newWorldZ = s.position.z + 400 + Math.random() * 8;
+        // Project-wide rule: never park scenery on a cross-street. Push
+        // the candidate Z out of any conflicting band.
+        const safeZ = this._clampToSafeZ(newWorldZ, 5);
+        if (safeZ != null) newWorldZ = safeZ;
+        const handle = s.userData && s.userData.instanceHandle;
+        if (handle && this.instancedScenery) {
+          this.instancedScenery.moveHandle(handle, s.position.x, newWorldZ, {
+            biome: s.userData.biome || this.currentBiome,
+          });
+        }
+        s.position.z = newWorldZ;
       }
     }
   }

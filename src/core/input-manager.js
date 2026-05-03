@@ -1,58 +1,119 @@
 /**
- * InputManager — continuous horizontal control + jump/duck swipes
+ * InputManager — continuous horizontal control + jump/duck swipes.
+ *
+ * Configurable via setKeyBindings({left, right, jump, duck}) and setSwapLR(b).
+ * Defaults below match the historical hard-coded keys.
  *
  * Horizontal:
- *   • Keyboard: holding Left/Right (or A/D) sets `horizontalAxis` to ±1.
- *     Release to settle to 0. The game multiplies it by HORIZONTAL_SPEED
- *     for a continuous slide.
+ *   • Keyboard: holding the assigned LEFT/RIGHT keys sets `horizontalAxis`
+ *     to ±1. Release to settle to 0. The game multiplies it by
+ *     HORIZONTAL_SPEED for a continuous slide.
  *   • Touch: while a finger is down, `touchDeltaX` is the live horizontal
- *     drag distance in pixels relative to the touch-start point. The game
- *     converts that into a target X.
+ *     drag distance in pixels relative to the touch-start point.
  *
  * Vertical (one-shot):
- *   • Up swipe / ArrowUp / W / Space → onSwipe('up')   — jump
- *   • Down swipe / ArrowDown / S    → onSwipe('down') — duck
+ *   • Up swipe / JUMP key  → onSwipe('up')
+ *   • Down swipe / DUCK key → onSwipe('down')
  */
+
+const DEFAULT_BINDINGS = {
+  left:  ['ArrowLeft',  'a', 'A'],
+  right: ['ArrowRight', 'd', 'D'],
+  jump:  ['ArrowUp',    'w', 'W', ' '],
+  duck:  ['ArrowDown',  's', 'S'],
+};
 
 export class InputManager {
   constructor(element) {
     this.element = element;
-    this.onSwipe = null; // callback for 'up' / 'down'
+    this.onSwipe = null;
 
-    // Continuous horizontal state
-    this.horizontalAxis = 0;        // -1..1 keyboard axis
+    this.horizontalAxis = 0;
     this.touchActive = false;
     this.touchStartX = 0;
     this.touchCurrentX = 0;
-    this.touchDeltaX = 0;           // signed pixels since touchstart
+    this.touchDeltaX = 0;
     this.viewportWidth = window.innerWidth;
 
-    // Jump-held state (true while space/W/up is held, or while finger remains
-    // down after a vertical-up swipe). Used by the parachute glide mechanic.
     this.jumpHeld = false;
-    this._jumpEmitted = false;      // per-touch latch so a swipe only fires 'up' once
+    this._jumpEmitted = false;
 
-    // Internal keyboard state
     this._leftHeld = false;
     this._rightHeld = false;
 
-    // Touch swipe detection (for up/down)
     this._touchStartY = 0;
     this._touchStartTime = 0;
     this._verticalLocked = false;
     this._horizontalLocked = false;
+
+    this._swapLR = false;
+    // Mobile touch scheme — see setTouchScheme().
+    this._touchScheme = 'tap';
+    this._bindings = {
+      left:  DEFAULT_BINDINGS.left.slice(),
+      right: DEFAULT_BINDINGS.right.slice(),
+      jump:  DEFAULT_BINDINGS.jump.slice(),
+      duck:  DEFAULT_BINDINGS.duck.slice(),
+    };
+    this._keyToAction = this._buildKeyMap(this._bindings);
 
     this._setupTouch();
     this._setupKeyboard();
     this._setupResize();
   }
 
-  // Public helpers ─────────────────────────────────────────────
+  // ── Public configuration ─────────────────────────────────────
 
-  /** Returns true if the player is actively dragging horizontally on touch. */
-  isTouchDragging() { return this.touchActive && this._horizontalLocked; }
+  setKeyBindings(bindings) {
+    if (!bindings) return;
+    for (const action of ['left', 'right', 'jump', 'duck']) {
+      if (Array.isArray(bindings[action]) && bindings[action].length) {
+        this._bindings[action] = bindings[action].slice();
+      }
+    }
+    this._keyToAction = this._buildKeyMap(this._bindings);
+    // Drop any held state — the keys may have changed under the player's fingers
+    this._leftHeld = false;
+    this._rightHeld = false;
+    this.jumpHeld = false;
+    this._refreshAxis();
+  }
 
-  // Setup ──────────────────────────────────────────────────────
+  setSwapLR(swap) {
+    this._swapLR = !!swap;
+    this._refreshAxis();
+  }
+
+  /**
+   * Switch between three touch input schemes (mobile only):
+   *   'tap'   — touch-down = jump, touch-and-hold = double jump
+   *   'swipe' — vertical swipe-up = jump, swipe-up + hold = double jump
+   *   'hold'  — touch + hold ~150 ms = jump, vertical swipe-up = double jump
+   */
+  setTouchScheme(scheme) {
+    if (scheme === 'tap' || scheme === 'swipe' || scheme === 'hold') {
+      this._touchScheme = scheme;
+    }
+  }
+
+  // True when the player's drag should map onto X. Includes the post-jump
+  // case so steering left/right during a held parachute glide actually
+  // reaches the game (the gesture is vertical-locked at that point but
+  // the finger is held and we want lateral input to count).
+  isTouchDragging() {
+    if (!this.touchActive) return false;
+    return this._horizontalLocked || this.jumpHeld;
+  }
+
+  // ── Setup ────────────────────────────────────────────────────
+
+  _buildKeyMap(b) {
+    const m = new Map();
+    for (const action of ['left', 'right', 'jump', 'duck']) {
+      for (const k of b[action]) m.set(k, action);
+    }
+    return m;
+  }
 
   _setupResize() {
     window.addEventListener('resize', () => {
@@ -61,7 +122,33 @@ export class InputManager {
   }
 
   _setupTouch() {
+    // Touch model:
+    //   • TAP (touch + release within 200 ms, < 8 px drift) → single jump.
+    //   • TAP & HOLD (touch held > 200 ms with no drag) → fires the first
+    //     jump at 200 ms, then a SECOND jump at +250 ms (double jump);
+    //     the held finger keeps `jumpHeld = true` so the parachute opens
+    //     and stays open until release.
+    //   • Horizontal DRAG (> 8 px) → steering only, no jump fires.
+    //   • Vertical DRAG DOWN (> 30 px) → duck.
+    // After a tap-or-hold has emitted its jump(s), the finger can ALSO
+    // drag left/right to steer the airborne character.
+    // Block iOS Safari context-menu (long-press preview) on the canvas.
+    this.element.addEventListener('contextmenu', (e) => e.preventDefault());
+    // Block iOS pinch-zoom gesture events.
+    for (const evt of ['gesturestart', 'gesturechange', 'gestureend']) {
+      this.element.addEventListener(evt, (e) => e.preventDefault());
+    }
+    // Suppress iOS double-tap zoom on the canvas (the Safari engine still
+    // listens for it even with touch-action:none on some versions).
+    let lastTouchEnd = 0;
+    this.element.addEventListener('touchend', (e) => {
+      const now = Date.now();
+      if (now - lastTouchEnd < 350) e.preventDefault();
+      lastTouchEnd = now;
+    }, { passive: false });
+
     this.element.addEventListener('touchstart', (e) => {
+      if (e.cancelable) e.preventDefault();
       const touch = e.touches[0];
       this.touchActive = true;
       this.touchStartX = touch.clientX;
@@ -72,115 +159,172 @@ export class InputManager {
       this._verticalLocked = false;
       this._horizontalLocked = false;
       this._jumpEmitted = false;
-    }, { passive: true });
+      this._duckEmitted = false;
+      this.jumpHeld = false;
+
+      if (this._touchScheme === 'tap') {
+        // INSTANT first jump on touch-down + double jump after 180 ms hold
+        this._jumpEmitted = true;
+        this.jumpHeld = true;
+        this._emit('up');
+        this._holdDoubleJumpTimer = setTimeout(() => {
+          if (this.touchActive && !this._horizontalLocked && !this._duckEmitted) {
+            this._emit('up');
+          }
+        }, 180);
+      } else if (this._touchScheme === 'hold') {
+        // First jump fires after 150 ms of holding without drag.
+        this.jumpHeld = true;     // flag the press for parachute later
+        this._holdJumpTimer = setTimeout(() => {
+          if (this.touchActive && !this._horizontalLocked && !this._duckEmitted) {
+            this._jumpEmitted = true;
+            this._emit('up');
+          }
+        }, 150);
+      }
+      // 'swipe' scheme: nothing on touchstart — wait for vertical drag.
+    }, { passive: false });
 
     this.element.addEventListener('touchmove', (e) => {
       if (!this.touchActive) return;
+      // Stop iOS rubber-band scroll, edge-swipe back/forward, etc.
+      if (e.cancelable) e.preventDefault();
       const touch = e.touches[0];
       const dx = touch.clientX - this.touchStartX;
       const dy = touch.clientY - this._touchStartY;
 
-      // Decide whether this gesture is mostly horizontal (drag) or vertical
-      // (one-shot swipe). Once locked, stay in that mode.
       if (!this._horizontalLocked && !this._verticalLocked) {
         if (Math.abs(dx) > 8 || Math.abs(dy) > 8) {
-          if (Math.abs(dx) >= Math.abs(dy)) this._horizontalLocked = true;
-          else this._verticalLocked = true;
+          if (Math.abs(dx) >= Math.abs(dy)) {
+            this._horizontalLocked = true;
+            // It's a drag, not a tap → cancel pending tap-hold jumps
+            this._cancelTapHoldTimers();
+          } else {
+            this._verticalLocked = true;
+          }
         }
       }
 
       this.touchCurrentX = touch.clientX;
-      this.touchDeltaX = this._horizontalLocked ? dx : 0;
-
-      // Vertical-up swipe fires 'up' immediately so the player can keep the
-      // finger pressed for jumpHeld (parachute glide).
-      if (this._verticalLocked && dy < -30 && !this._jumpEmitted) {
-        this._jumpEmitted = true;
-        this.jumpHeld = true;
-        this._emit('up');
+      // Horizontal drag is reported when EITHER:
+      //   • the gesture is horizontal-locked (regular ground slide), OR
+      //   • a jump has already fired and the finger is still down — the
+      //     player is mid-air / holding the parachute and now wants to
+      //     steer left/right.
+      if (this._horizontalLocked || this.jumpHeld) {
+        this.touchDeltaX = dx;
+      } else {
+        this.touchDeltaX = 0;
       }
-    }, { passive: true });
 
-    const endTouch = (e) => {
+      // Down-swipe → duck. Cancel any pending jump from the tap-hold timer.
+      if (this._verticalLocked && dy > 30 && !this._duckEmitted) {
+        this._duckEmitted = true;
+        this._cancelTapHoldTimers();
+        this._emit('down');
+      }
+
+      // Vertical-up swipe handling per scheme:
+      //   'swipe' — first up swipe = jump; finger then held arms
+      //             parachute / chains a double jump.
+      //   'hold'  — vertical up swipe = double jump (if hold-jump
+      //             already fired) or first jump.
+      //   'tap'   — ignored (taps already handled on touchstart).
+      if (this._verticalLocked && dy < -30 && this._touchScheme !== 'tap') {
+        if (this._touchScheme === 'swipe' && !this._jumpEmitted) {
+          this._jumpEmitted = true;
+          this.jumpHeld = true;
+          this._emit('up');
+          // After the first swipe-up fires, chain a double jump after a
+          // brief hold so swipe-up-and-hold reads as double jump.
+          this._holdDoubleJumpTimer = setTimeout(() => {
+            if (this.touchActive && !this._duckEmitted) this._emit('up');
+          }, 180);
+          // Reset horizontal origin so subsequent left/right drag steers cleanly
+          this.touchStartX = touch.clientX;
+          this.touchDeltaX = 0;
+        } else if (this._touchScheme === 'hold') {
+          // Cancel pending hold-jump (the swipe replaces it as the trigger)
+          this._cancelTapHoldTimers();
+          this._jumpEmitted = true;
+          this.jumpHeld = true;
+          this._emit('up');
+          this.touchStartX = touch.clientX;
+          this.touchDeltaX = 0;
+        }
+      }
+    }, { passive: false });
+
+    const endTouch = () => {
       if (!this.touchActive) return;
-      const touch = (e.changedTouches && e.changedTouches[0]) || null;
-      const dy = touch ? touch.clientY - this._touchStartY : 0;
-      const dt = Date.now() - this._touchStartTime;
-
-      // Quick vertical swipe that didn't already fire an 'up' on touchmove:
-      // emit 'up' or 'down' here. (Up is normally emitted mid-swipe so the
-      // player can keep their finger held for parachute glide.)
-      if (this._verticalLocked && dt < 400 && Math.abs(dy) > 30 && !this._jumpEmitted) {
-        this._emit(dy < 0 ? 'up' : 'down');
-      }
-
+      // First jump already fired on touch-down. On release we just stop
+      // holding (closes parachute) and clear pending double-jump timer.
+      this._cancelTapHoldTimers();
       this.touchActive = false;
       this.touchDeltaX = 0;
       this._verticalLocked = false;
       this._horizontalLocked = false;
       this.jumpHeld = false;
       this._jumpEmitted = false;
+      this._duckEmitted = false;
     };
-    this.element.addEventListener('touchend', endTouch, { passive: true });
-    this.element.addEventListener('touchcancel', endTouch, { passive: true });
+    this.element.addEventListener('touchend', endTouch, { passive: false });
+    this.element.addEventListener('touchcancel', endTouch, { passive: false });
+  }
+
+  _cancelTapHoldTimers() {
+    if (this._holdDoubleJumpTimer) {
+      clearTimeout(this._holdDoubleJumpTimer);
+      this._holdDoubleJumpTimer = null;
+    }
+    if (this._holdJumpTimer) {
+      clearTimeout(this._holdJumpTimer);
+      this._holdJumpTimer = null;
+    }
   }
 
   _setupKeyboard() {
     window.addEventListener('keydown', (e) => {
-      switch (e.key) {
-        case 'ArrowLeft':
-        case 'a':
-        case 'A':
+      const action = this._keyToAction.get(e.key);
+      if (!action) return;
+      switch (action) {
+        case 'left':
           this._leftHeld = true;
           this._refreshAxis();
           break;
-        case 'ArrowRight':
-        case 'd':
-        case 'D':
+        case 'right':
           this._rightHeld = true;
           this._refreshAxis();
           break;
-        case 'ArrowUp':
-        case 'w':
-        case 'W':
-        case ' ':
+        case 'jump':
           this.jumpHeld = true;
           if (!e.repeat) this._emit('up');
           e.preventDefault();
           break;
-        case 'ArrowDown':
-        case 's':
-        case 'S':
+        case 'duck':
           if (!e.repeat) this._emit('down');
           break;
       }
     });
 
     window.addEventListener('keyup', (e) => {
-      switch (e.key) {
-        case 'ArrowLeft':
-        case 'a':
-        case 'A':
+      const action = this._keyToAction.get(e.key);
+      if (!action) return;
+      switch (action) {
+        case 'left':
           this._leftHeld = false;
           this._refreshAxis();
           break;
-        case 'ArrowRight':
-        case 'd':
-        case 'D':
+        case 'right':
           this._rightHeld = false;
           this._refreshAxis();
           break;
-        case 'ArrowUp':
-        case 'w':
-        case 'W':
-        case ' ':
+        case 'jump':
           this.jumpHeld = false;
           break;
       }
     });
 
-    // Drop the held state if the window loses focus, so the player doesn't
-    // get stuck sliding in one direction.
     window.addEventListener('blur', () => {
       this._leftHeld = false;
       this._rightHeld = false;
@@ -190,8 +334,8 @@ export class InputManager {
   }
 
   _refreshAxis() {
-    this.horizontalAxis =
-      (this._rightHeld ? 1 : 0) - (this._leftHeld ? 1 : 0);
+    const raw = (this._rightHeld ? 1 : 0) - (this._leftHeld ? 1 : 0);
+    this.horizontalAxis = this._swapLR ? -raw : raw;
   }
 
   _emit(direction) {
