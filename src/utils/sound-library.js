@@ -70,24 +70,37 @@ export const SOUND_EVENTS = {
     '/audio/halhala.m4a',
     '/audio/weal.m4a',
   ],
-  coin_pickup: ['/audio/coin.m4a'],
-  jump:        [],
+  coin_pickup: [
+    '/audio/coin.m4a',
+    '/audio/coin.mp3',
+  ],
+  jump:        ['/audio/jump.mp3'],
   double_jump: [],
-  parachute:   [],
-  ramp_launch: [],
-  crash:       [],
+  parachute:   ['/audio/parachute.mp3'],
+  ramp_launch: ['/audio/ramp.mp3'],
+  crash:       ['/audio/crash.mp3'],
   crash_lamp:  [],
   crash_tree:  [],
   crash_rock:  [],
   crash_car:   [],
   drone_alert:   ['/audio/rocket1.m4a'],
   drone_approch: [
+    '/audio/close-drone.mp3',
     '/audio/asrfha.m4a',
     '/audio/fake.m4a',
     '/audio/rocket2.m4a',
     '/audio/elhakona.m4a',
   ],
-  speed_up:    [],
+  car_approach: [
+    '/audio/close-car.mp3',
+  ],
+  landing: [
+    '/audio/landing.mp3',
+  ],
+  sled: [
+    '/audio/snow-slide.mp3',
+  ],
+  speed_up:    ['/audio/yahoo.mp3'],
   win:         [],
 };
 

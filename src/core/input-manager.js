@@ -334,7 +334,7 @@ export class InputManager {
   }
 
   _refreshAxis() {
-    const raw = (this._rightHeld ? 1 : 0) - (this._leftHeld ? 1 : 0);
+    const raw = (this._leftHeld ? 1 : 0) - (this._rightHeld ? 1 : 0);
     this.horizontalAxis = this._swapLR ? -raw : raw;
   }
 

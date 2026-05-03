@@ -44,6 +44,7 @@ export class Game {
     this.playerX = 0;            // float world X, clamped to [PLAYER_X_MIN..MAX]
     this.playerY = 0;
     this._playerXVelocity = 0;   // last-frame velocity, for tilt/visual feedback
+    this._playerXMomentum = 0;   // horizontal momentum for smooth movement
     this._touchDragOriginX = 0;  // playerX at touch-start, for drag-mapping
     this.isJumping = false;
     this.isDucking = false;
@@ -3356,6 +3357,12 @@ export class Game {
         const dzCar = Math.abs(carWorldZ - pz);
         const halfL = (car.userData.length || 3.0) / 2 + 0.3;
         const halfW = (car.userData.width  || 1.7) / 2 + 0.3;
+        // Close call sound
+        const closeThreshold = 10;
+        if (dxCar < halfL + closeThreshold && dzCar < halfW + closeThreshold && this.closeCallCooldown <= 0) {
+          this.sounds.play('car_approach');
+          this.closeCallCooldown = 2;
+        }
         if (dxCar < halfL && dzCar < halfW) {
           // Touching the top? Slide across instead of dying.
           const top = car.userData.height || 1.5;
@@ -4516,6 +4523,12 @@ export class Game {
       const dx = d.position.x - px;
       if (dx > 1.3 || dx < -1.3) continue;
       const dy = d.position.y - py;
+      // Close call for drones
+      const closeThreshold = 10;
+      if (dx * dx + dy * dy + dz * dz < closeThreshold * closeThreshold && this.closeCallCooldown <= 0) {
+        this.sounds.play('drone_approach');
+        this.closeCallCooldown = 2;
+      }
       if (dx * dx + dy * dy + dz * dz < 1.3 * 1.3) return 'drone';
     }
     // Balloons (still tracked in skyObjects)
@@ -4542,6 +4555,7 @@ export class Game {
     this._crashPos = position.clone();
     this._killer   = this._findKillerObject(position, hitType);
     this._deathCamElapsed = 0;
+    // this.sounds.stop('ramp');
     // Plant a flag at the death spot showing the distance reached
     this._placeDeathFlag(position, this.distance);
     this._explode(position.clone(), hitType || 'car');
@@ -5127,6 +5141,8 @@ export class Game {
       }
       this._duckRestoreTimer = null;
     }, Math.max(0, ms));
+    // this.sounds.stop('yahoo');
+    // this.sounds.stop('parachute');
   }
 
   restart(opts = {}) {
@@ -5163,6 +5179,7 @@ export class Game {
     this.coins = 0;
     this.playerX = 0;
     this._playerXVelocity = 0;
+    this._playerXMomentum = 0;
     this._wasDragging = false;
     this.isJumping = false;
     this.isDucking = false;
@@ -5318,6 +5335,7 @@ export class Game {
     if (!this.parachuteOpen) return;
     this.parachuteOpen = false;
     this.parachuteTimer = 0;
+    // this.sounds.stop('parachute');
   }
 
   _flashChuteEmpty() {
@@ -5408,8 +5426,24 @@ export class Game {
       const target = this._touchDragOriginX
         + this.input.touchDeltaX * GAME_CONFIG.TOUCH_DRAG_SCALE;
       this.playerX += (target - this.playerX) * Math.min(1, 18 * delta);
-    } else if (this.input && this.input.horizontalAxis) {
-      this.playerX += this.input.horizontalAxis * GAME_CONFIG.HORIZONTAL_SPEED * delta;
+      // Reset momentum during touch drag for direct control
+      this._playerXMomentum = 0;
+    } else {
+      // Apply input as force to momentum (increased gain for responsiveness)
+      if (this.input && this.input.horizontalAxis) {
+        const inputForce = this.input.horizontalAxis * GAME_CONFIG.HORIZONTAL_SPEED * delta;
+        this._playerXMomentum += inputForce;
+      }
+
+      // Apply friction/damping to momentum (reduced for better momentum retention)
+      const friction = 0.94; // Less friction so momentum lasts longer
+      this._playerXMomentum *= Math.pow(friction, delta * 60); // Frame-rate independent
+
+      // Clamp momentum to reasonable limits (increased for stronger input)
+      this._playerXMomentum = THREE.MathUtils.clamp(this._playerXMomentum, -GAME_CONFIG.MAX_MOMENTUM, GAME_CONFIG.MAX_MOMENTUM);
+
+      // Apply momentum to position
+      this.playerX += this._playerXMomentum * delta;
     }
     this._wasDragging = dragging;
 
@@ -5419,7 +5453,31 @@ export class Game {
     const splitNear = this._mountainSplitFactor();
     const xMin = THREE.MathUtils.lerp(GAME_CONFIG.PLAYER_X_MIN, -10, splitNear);
     const xMax = THREE.MathUtils.lerp(GAME_CONFIG.PLAYER_X_MAX,  10, splitNear);
-    this.playerX = THREE.MathUtils.clamp(this.playerX, xMin, xMax);
+
+    // Smoothly decelerate momentum when approaching the left/right bounds.
+    const boundaryRange = 1.5;
+    if (this._playerXMomentum > 0) {
+      const distanceToRight = xMax - this.playerX;
+      if (distanceToRight < boundaryRange) {
+        const edgeFactor = THREE.MathUtils.smoothstep(distanceToRight, 0, boundaryRange);
+        this._playerXMomentum *= edgeFactor;
+      }
+    } else if (this._playerXMomentum < 0) {
+      const distanceToLeft = this.playerX - xMin;
+      if (distanceToLeft < boundaryRange) {
+        const edgeFactor = THREE.MathUtils.smoothstep(distanceToLeft, 0, boundaryRange);
+        this._playerXMomentum *= edgeFactor;
+      }
+    }
+
+    const clampedX = THREE.MathUtils.clamp(this.playerX, xMin, xMax);
+    if (clampedX !== this.playerX) {
+      if ((this._playerXMomentum > 0 && clampedX >= xMax) ||
+          (this._playerXMomentum < 0 && clampedX <= xMin)) {
+        this._playerXMomentum = 0;
+      }
+    }
+    this.playerX = clampedX;
     this.player.position.x = this.playerX;
     this._playerXVelocity = (this.playerX - prevX) / Math.max(0.001, delta);
 
@@ -5470,6 +5528,9 @@ export class Game {
         this.isJumping = false;
         this.canDoubleJump = false;
         this._closeParachute();
+         this.sounds.play('landing');
+         // this.sounds.stop('ramp');
+         // this.sounds.stop('jump');
         if (this.airborneFromRamp) this._finishAirTime();
       }
     }
@@ -6188,6 +6249,7 @@ export class Game {
     // A tiny camera shake on milestone
     this.shakeTimer = Math.max(this.shakeTimer, 0.35);
     this.shakeMagnitude = Math.max(this.shakeMagnitude, 0.25);
+    this.sounds.play('speed_up');
   }
 
   // ─────────────────────────────────────
