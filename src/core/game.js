@@ -6415,6 +6415,8 @@ export class Game {
             biome: s.userData.biome || this.currentBiome,
           });
         }
+        // Both the marker AND the real-mesh Group track the recycle anchor
+        // in .position.z. Bumping it forward = scenery now sits ahead.
         s.position.z = newWorldZ;
       }
     }
