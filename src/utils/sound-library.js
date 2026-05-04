@@ -110,9 +110,19 @@ export const SOUND_EVENTS = {
   win:           { active: true, gain: 1.0, files: [] },
 };
 
+// Each entry can configure two independent ducks:
+//   to / durationMs       — bgMusic dip (handled by the host via onDuck)
+//   sfxTo / sfxDurationMs — OTHER-SFX bus dip (handled inside the
+//                           SoundLibrary). When sfxTo is present:
+//                             • The triggering event plays through a
+//                               priority bus and is NOT itself ducked.
+//                             • All other concurrent SFX drop to sfxTo
+//                               for sfxDurationMs (or until the clip
+//                               finishes if sfxDurationMs is omitted).
+//                             • Re-triggers extend; never stack.
 export const EVENT_DUCK = {
-  drone_alert:   { to: 0.15, durationMs: 1500 },
-  drone_approch: { to: 0.15, durationMs: 2000 },
+  drone_alert:   { to: 0.15, durationMs: 1500, sfxTo: 0.5 },
+  drone_approch: { to: 0.15, durationMs: 2000, sfxTo: 0.5 },
   // Game-feel ducks: short dips so important moments cut through music.
   // Re-triggers extend rather than stack, so rapid jumps don't pulse weirdly.
   crash:         { to: 0.25, durationMs: 1200 },
@@ -134,7 +144,14 @@ export class SoundLibrary {
     this._duck = {};
     const duckMap = opts.duckMap || EVENT_DUCK;
     for (const [name, cfg] of Object.entries(duckMap)) {
-      if (cfg) this._duck[name] = { to: cfg.to ?? 0.2, durationMs: cfg.durationMs ?? 1500 };
+      if (cfg) {
+        this._duck[name] = {
+          to: cfg.to ?? 0.2,
+          durationMs: cfg.durationMs ?? 1500,
+          sfxTo: typeof cfg.sfxTo === 'number' ? cfg.sfxTo : null,
+          sfxDurationMs: typeof cfg.sfxDurationMs === 'number' ? cfg.sfxDurationMs : null,
+        };
+      }
     }
     this._onDuck = typeof opts.onDuck === 'function' ? opts.onDuck : null;
     for (const [name, entry] of Object.entries(eventMap)) {
@@ -156,6 +173,15 @@ export class SoundLibrary {
       this._ctx = new AC();
       this._destinationGain = this._ctx.createGain();
       this._destinationGain.gain.value = this._volume;
+      // Two-tier SFX bus:
+      //   • _otherSfxGain — default route for ALL events, can be ducked
+      //     by priority events (e.g. drone alerts).
+      //   • _destinationGain — direct master bus for priority events
+      //     so they aren't dimmed by their own duck.
+      // Both feed into the master limiter → ctx.destination.
+      this._otherSfxGain = this._ctx.createGain();
+      this._otherSfxGain.gain.value = 1.0;
+      this._otherSfxGain.connect(this._destinationGain);
       // Master limiter: tames overlapping SFX bursts so the summed signal
       // stops clipping when several events fire at once. Threshold/ratio
       // are intentionally gentle — keeps single-shot punch, only kicks in
@@ -214,6 +240,12 @@ export class SoundLibrary {
       this._loadBuffer(path);
       return null;
     }
+    // Priority events (sfxTo defined in EVENT_DUCK) bypass the
+    // duckable bus so they don't dim themselves. All other events go
+    // through _otherSfxGain so a priority event can duck them.
+    const duckCfg = this._duck[eventName];
+    const isPriority = !!(duckCfg && typeof duckCfg.sfxTo === 'number');
+    const targetBus = isPriority ? this._destinationGain : this._otherSfxGain;
     let source;
     try {
       source = ctx.createBufferSource();
@@ -226,18 +258,56 @@ export class SoundLibrary {
       if (v !== 1.0) {
         const g = ctx.createGain();
         g.gain.value = v;
-        source.connect(g).connect(this._destinationGain);
+        source.connect(g).connect(targetBus);
       } else {
-        source.connect(this._destinationGain);
+        source.connect(targetBus);
       }
       source.start(0);
     } catch (e) {
       return null;
     }
-    // Fire duck hook
-    const duckCfg = this._duck[eventName];
+    // Fire bgMusic duck hook (host-handled)
     if (duckCfg && this._onDuck) this._onDuck(duckCfg);
+    // Fire SFX-bus duck for priority events (library-handled).
+    // Default duration = clip length so 'until they're playing' is exact.
+    if (isPriority) {
+      const sfxDur = duckCfg.sfxDurationMs != null
+        ? duckCfg.sfxDurationMs
+        : Math.max(50, Math.round(buffer.duration * 1000));
+      this._duckOtherSfx(duckCfg.sfxTo, sfxDur);
+    }
     return source;
+  }
+
+  // Duck the non-priority SFX bus to `toValue` for `durationMs`. Re-trigger
+  // policy: extend (push restore later); never stack. A short ramp avoids
+  // audible clicks at duck enter/exit.
+  _duckOtherSfx(toValue, durationMs) {
+    if (!this._otherSfxGain || !this._ctx) return;
+    const now = Date.now();
+    const restoreAt = now + Math.max(0, durationMs);
+    if (this._sfxDuckRestoreAt && restoreAt < this._sfxDuckRestoreAt) return;
+    this._sfxDuckRestoreAt = restoreAt;
+    const param = this._otherSfxGain.gain;
+    const t = this._ctx.currentTime;
+    try {
+      param.cancelScheduledValues(t);
+      param.setValueAtTime(param.value, t);
+      param.linearRampToValueAtTime(clamp(toValue, 0, 1), t + 0.04);
+    } catch (e) { /* ignore */ }
+    if (this._sfxDuckRestoreTimer) clearTimeout(this._sfxDuckRestoreTimer);
+    this._sfxDuckRestoreTimer = setTimeout(() => {
+      this._sfxDuckRestoreTimer = null;
+      this._sfxDuckRestoreAt = 0;
+      if (!this._otherSfxGain || !this._ctx) return;
+      const p = this._otherSfxGain.gain;
+      const t2 = this._ctx.currentTime;
+      try {
+        p.cancelScheduledValues(t2);
+        p.setValueAtTime(p.value, t2);
+        p.linearRampToValueAtTime(1.0, t2 + 0.08);
+      } catch (e) { /* ignore */ }
+    }, durationMs);
   }
 
   /** Add a sound to an event pool. Creates the event if it doesn't exist. */
