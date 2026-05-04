@@ -116,7 +116,6 @@ export const SOUND_EVENTS = {
 };
 
 export const EVENT_DUCK = {
-  game_start:    { to: 0.15, durationMs: 4000 },
   drone_alert:   { to: 0.15, durationMs: 1500 },
   drone_approch: { to: 0.15, durationMs: 2000 },
   // Game-feel ducks: short dips so important moments cut through music.
