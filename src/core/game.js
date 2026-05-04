@@ -6178,7 +6178,13 @@ export class Game {
         coin.userData.collected = true;
         coin.visible = false;
         this.coins++;
-        this.sounds.play('coin_pickup');
+        // Cooldown so chained pickups (5 coins in a row) read as a series of
+        // distinct ticks, not one wash of overlapping clips.
+        const now = performance.now();
+        if (now - (this._lastCoinSfxAt || 0) > 50) {
+          this.sounds.play('coin_pickup');
+          this._lastCoinSfxAt = now;
+        }
         this.score += 10;
       }
     }
