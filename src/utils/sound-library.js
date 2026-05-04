@@ -63,44 +63,56 @@
  * ─────────────────────────────────────────────────────────────────
  */
 
+// Each event is either a string[] (legacy: pool of file paths) or
+// { files: string[], gain: number } where `gain` is a per-event volume
+// multiplier applied at play time. Use gain to compensate for clips
+// that are mastered louder/quieter than the rest of the library —
+// without re-encoding the source files.
+//
+//   1.0 = no change (default)
+//   0.7 = quieter (loud clip; trim it down)
+//   1.6 = louder  (quiet voice clip; boost it)
+//
+// Per-call opts.volume in play() multiplies on top of this gain.
 export const SOUND_EVENTS = {
-  game_start:  [
+  // Voice barks tend to be ~6 dB quieter than mastered SFX.
+  game_start:  { gain: 1.6, files: [
     '/audio/new1.m4a',
     '/audio/estorha.m4a',
     '/audio/halhala.m4a',
     '/audio/weal.m4a',
-  ],
-  coin_pickup: [
+  ]},
+  coin_pickup: { gain: 1.0, files: [
     '/audio/coin.mp3?v=2',
-  ],
-  jump:        ['/audio/jump.mp3'],
-  double_jump: [],
-  parachute:   ['/audio/parachute.mp3'],
-  ramp_launch: ['/audio/ramp.mp3'],
-  crash:       ['/audio/crash.mp3'],
-  crash_lamp:  [],
-  crash_tree:  [],
-  crash_rock:  [],
-  crash_car:   [],
-  drone_alert:   ['/audio/rocket1.m4a'],
-  drone_approch: [
+  ]},
+  jump:        { gain: 1.0, files: ['/audio/jump.mp3'] },
+  double_jump: { gain: 1.0, files: [] },
+  parachute:   { gain: 0.9, files: ['/audio/parachute.mp3'] },
+  ramp_launch: { gain: 0.85, files: ['/audio/ramp.mp3'] },
+  crash:       { gain: 1.0, files: ['/audio/crash.mp3'] },
+  crash_lamp:  { gain: 1.0, files: [] },
+  crash_tree:  { gain: 1.0, files: [] },
+  crash_rock:  { gain: 1.0, files: [] },
+  crash_car:   { gain: 1.0, files: [] },
+  drone_alert:   { gain: 1.3, files: ['/audio/rocket1.m4a'] },
+  drone_approch: { gain: 1.5, files: [
     '/audio/close-drone.mp3',
     '/audio/asrfha.m4a',
     '/audio/fake.m4a',
     '/audio/rocket2.m4a',
     '/audio/elhakona.m4a',
-  ],
-  car_approach: [
+  ]},
+  car_approach: { gain: 1.2, files: [
     '/audio/close-car.mp3',
-  ],
-  landing: [
+  ]},
+  landing: { gain: 1.0, files: [
     '/audio/landing.mp3',
-  ],
-  sled: [
+  ]},
+  sled: { gain: 0.7, files: [
     '/audio/snow-slide.mp3',
-  ],
-  speed_up:    ['/audio/yahoo.mp3'],
-  win:         [],
+  ]},
+  speed_up:    { gain: 0.85, files: ['/audio/yahoo.mp3'] },
+  win:         { gain: 1.0, files: [] },
 };
 
 export const EVENT_DUCK = {
@@ -125,8 +137,8 @@ export class SoundLibrary {
       if (cfg) this._duck[name] = { to: cfg.to ?? 0.2, durationMs: cfg.durationMs ?? 1500 };
     }
     this._onDuck = typeof opts.onDuck === 'function' ? opts.onDuck : null;
-    for (const [name, paths] of Object.entries(eventMap)) {
-      this._events[name] = (paths || []).slice();
+    for (const [name, entry] of Object.entries(eventMap)) {
+      this._events[name] = normalizeEntry(entry);
     }
   }
 
@@ -188,11 +200,11 @@ export class SoundLibrary {
 
   play(eventName, opts = {}) {
     if (!this._enabled) return null;
-    const list = this._events[eventName];
-    if (!list || list.length === 0) return null;
+    const entry = this._events[eventName];
+    if (!entry || !entry.files || entry.files.length === 0) return null;
     const ctx = this._ctx;
     if (!ctx) return null;
-    const path = list[Math.floor(Math.random() * list.length)];
+    const path = entry.files[Math.floor(Math.random() * entry.files.length)];
     const buffer = this._buffers.get(path);
     if (!buffer) {
       // Buffer wasn't preloaded — fire a load but skip THIS playback
@@ -204,7 +216,11 @@ export class SoundLibrary {
     try {
       source = ctx.createBufferSource();
       source.buffer = buffer;
-      const v = typeof opts.volume === 'number' ? clamp(opts.volume, 0, 1) : 1.0;
+      // Per-event gain × per-call opts.volume. Skip the gain node entirely
+      // when both are 1.0 to keep the graph minimal.
+      const callV = typeof opts.volume === 'number' ? clamp(opts.volume, 0, 4) : 1.0;
+      const eventGain = typeof entry.gain === 'number' ? entry.gain : 1.0;
+      const v = callV * eventGain;
       if (v !== 1.0) {
         const g = ctx.createGain();
         g.gain.value = v;
@@ -224,25 +240,36 @@ export class SoundLibrary {
 
   /** Add a sound to an event pool. Creates the event if it doesn't exist. */
   addSound(eventName, path) {
-    if (!this._events[eventName]) this._events[eventName] = [];
-    this._events[eventName].push(path);
+    if (!this._events[eventName]) this._events[eventName] = { files: [], gain: 1.0 };
+    this._events[eventName].files.push(path);
     if (this._ctx) this._loadBuffer(path);
   }
 
   removeSound(eventName, path) {
-    const list = this._events[eventName];
-    if (!list) return;
-    const idx = list.indexOf(path);
-    if (idx >= 0) list.splice(idx, 1);
+    const entry = this._events[eventName];
+    if (!entry) return;
+    const idx = entry.files.indexOf(path);
+    if (idx >= 0) entry.files.splice(idx, 1);
   }
 
-  setEvent(eventName, paths) {
-    this._events[eventName] = (paths || []).slice();
-    if (this._ctx) for (const p of this._events[eventName]) this._loadBuffer(p);
+  setEvent(eventName, entry) {
+    const norm = normalizeEntry(entry);
+    this._events[eventName] = norm;
+    if (this._ctx) for (const p of norm.files) this._loadBuffer(p);
   }
 
-  getSounds(eventName) { return (this._events[eventName] || []).slice(); }
-  listEvents()         { return Object.keys(this._events); }
+  /** Set just the per-event gain (volume multiplier) without touching the file pool. */
+  setEventGain(eventName, gain) {
+    const entry = this._events[eventName];
+    if (!entry) return;
+    entry.gain = typeof gain === 'number' ? gain : 1.0;
+  }
+
+  getSounds(eventName) {
+    const entry = this._events[eventName];
+    return entry ? entry.files.slice() : [];
+  }
+  listEvents() { return Object.keys(this._events); }
 
   setVolume(v) {
     this._volume = clamp(v, 0, 1);
@@ -279,8 +306,8 @@ export class SoundLibrary {
     // iOS, but decodeAudioData still works. unlock() resumes it later.
     this._ensureContext();
     const allPaths = new Set();
-    for (const list of Object.values(this._events)) {
-      for (const p of list) allPaths.add(p);
+    for (const entry of Object.values(this._events)) {
+      for (const p of entry.files) allPaths.add(p);
     }
     const paths = [...allPaths];
     const total = paths.length;
@@ -323,3 +350,14 @@ export class SoundLibrary {
 }
 
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+// Accept legacy array shape OR { files, gain }; always store the
+// expanded form so play()/preloadAll() have one path to read from.
+function normalizeEntry(entry) {
+  if (!entry) return { files: [], gain: 1.0 };
+  if (Array.isArray(entry)) return { files: entry.slice(), gain: 1.0 };
+  return {
+    files: Array.isArray(entry.files) ? entry.files.slice() : [],
+    gain:  typeof entry.gain === 'number' ? entry.gain : 1.0,
+  };
+}
