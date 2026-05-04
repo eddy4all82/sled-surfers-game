@@ -103,7 +103,6 @@ export const SOUND_EVENTS = {
   crash_car:     { active: true, gain: 1.0, priority: true, files: [] },
   drone_alert:   { active: true, gain: 3.0, files: ['/audio/rocket1.m4a'] },
   drone_approch: { active: true, gain: 4.0, files: [
-    '/audio/close-drone.mp3',
     '/audio/asrfha.m4a',
     '/audio/fake.m4a',
     '/audio/rocket2.m4a',
