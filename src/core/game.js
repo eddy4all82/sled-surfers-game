@@ -919,15 +919,15 @@ export class Game {
       e.stopPropagation();
       if (this.sounds && this.sounds.unlock) this.sounds.unlock();
       this._mobileJumpHeld = true;
-      // Mirror the touch-input contract: a sustained press IS jumpHeld.
-      // Required for parachute arming → opening transition.
-      if (this.input) this.input.jumpHeld = true;
+      // Use the external-jumpHeld channel so a separate canvas-finger
+      // can swipe to steer without its touchstart resetting jumpHeld.
+      if (this.input) this.input.setExternalJumpHeld(true);
       this._handleSwipe('up');
     };
     const release = (e) => {
       if (e) { e.preventDefault(); e.stopPropagation(); }
       this._mobileJumpHeld = false;
-      if (this.input) this.input.jumpHeld = false;
+      if (this.input) this.input.setExternalJumpHeld(false);
     };
 
     btn.addEventListener('touchstart', press, { passive: false });

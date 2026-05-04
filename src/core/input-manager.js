@@ -30,12 +30,21 @@ export class InputManager {
 
     this.horizontalAxis = 0;
     this.touchActive = false;
+    this._touchId = null;            // identifier of the canvas-tracked finger
     this.touchStartX = 0;
     this.touchCurrentX = 0;
     this.touchDeltaX = 0;
     this.viewportWidth = window.innerWidth;
 
-    this.jumpHeld = false;
+    // jumpHeld is exposed as a getter that ORs two independent sources:
+    //   _gestureJumpHeld — owned by canvas-touch & keyboard gestures
+    //   _externalJumpHeld — owned by external UI (e.g. the on-screen
+    //                       mobile jump/parachute button)
+    // This lets a finger on the parachute button keep the chute open
+    // while a separate finger swipes the canvas to steer, without
+    // either source clobbering the other's state.
+    this._gestureJumpHeld = false;
+    this._externalJumpHeld = false;
     this._jumpEmitted = false;
 
     this._leftHeld = false;
@@ -75,9 +84,17 @@ export class InputManager {
     // Drop any held state — the keys may have changed under the player's fingers
     this._leftHeld = false;
     this._rightHeld = false;
-    this.jumpHeld = false;
+    this._gestureJumpHeld = false;
     this._refreshAxis();
   }
+
+  // Public getter — true if EITHER source is holding jump.
+  get jumpHeld() { return this._gestureJumpHeld || this._externalJumpHeld; }
+
+  // External UI hook (e.g. the mobile jump/parachute button) for
+  // asserting jumpHeld without going through canvas/keyboard gestures.
+  // Won't clobber the gesture-side flag.
+  setExternalJumpHeld(on) { this._externalJumpHeld = !!on; }
 
   setSwapLR(swap) {
     this._swapLR = !!swap;
@@ -149,7 +166,15 @@ export class InputManager {
 
     this.element.addEventListener('touchstart', (e) => {
       if (e.cancelable) e.preventDefault();
-      const touch = e.touches[0];
+      // Multi-touch model: the canvas owns ONE steering finger at a time.
+      // Track that finger by identifier so a second finger landing
+      // elsewhere (e.g. the on-screen jump button overlay) doesn't
+      // hijack `touches[0]` and corrupt our start-X. If a canvas finger
+      // is already active, ignore subsequent canvas fingers.
+      if (this.touchActive) return;
+      const touch = e.changedTouches[0];
+      if (!touch) return;
+      this._touchId = touch.identifier;
       this.touchActive = true;
       this.touchStartX = touch.clientX;
       this.touchCurrentX = touch.clientX;
@@ -160,12 +185,12 @@ export class InputManager {
       this._horizontalLocked = false;
       this._jumpEmitted = false;
       this._duckEmitted = false;
-      this.jumpHeld = false;
+      this._gestureJumpHeld = false;
 
       if (this._touchScheme === 'tap') {
         // INSTANT first jump on touch-down + double jump after 180 ms hold
         this._jumpEmitted = true;
-        this.jumpHeld = true;
+        this._gestureJumpHeld = true;
         this._emit('up');
         this._holdDoubleJumpTimer = setTimeout(() => {
           if (this.touchActive && !this._horizontalLocked && !this._duckEmitted) {
@@ -174,7 +199,7 @@ export class InputManager {
         }, 180);
       } else if (this._touchScheme === 'hold') {
         // First jump fires after 150 ms of holding without drag.
-        this.jumpHeld = true;     // flag the press for parachute later
+        this._gestureJumpHeld = true;     // flag the press for parachute later
         this._holdJumpTimer = setTimeout(() => {
           if (this.touchActive && !this._horizontalLocked && !this._duckEmitted) {
             this._jumpEmitted = true;
@@ -189,7 +214,10 @@ export class InputManager {
       if (!this.touchActive) return;
       // Stop iOS rubber-band scroll, edge-swipe back/forward, etc.
       if (e.cancelable) e.preventDefault();
-      const touch = e.touches[0];
+      // Find OUR tracked finger only — ignore other fingers (e.g. the
+      // mobile jump button being held simultaneously).
+      const touch = this._findTouch(e);
+      if (!touch) return;
       const dx = touch.clientX - this.touchStartX;
       const dy = touch.clientY - this._touchStartY;
 
@@ -233,7 +261,7 @@ export class InputManager {
       if (this._verticalLocked && dy < -30 && this._touchScheme !== 'tap') {
         if (this._touchScheme === 'swipe' && !this._jumpEmitted) {
           this._jumpEmitted = true;
-          this.jumpHeld = true;
+          this._gestureJumpHeld = true;
           this._emit('up');
           // After the first swipe-up fires, chain a double jump after a
           // brief hold so swipe-up-and-hold reads as double jump.
@@ -247,7 +275,7 @@ export class InputManager {
           // Cancel pending hold-jump (the swipe replaces it as the trigger)
           this._cancelTapHoldTimers();
           this._jumpEmitted = true;
-          this.jumpHeld = true;
+          this._gestureJumpHeld = true;
           this._emit('up');
           this.touchStartX = touch.clientX;
           this.touchDeltaX = 0;
@@ -255,21 +283,45 @@ export class InputManager {
       }
     }, { passive: false });
 
-    const endTouch = () => {
+    const endTouch = (e) => {
       if (!this.touchActive) return;
+      // Only end if OUR tracked finger is the one that lifted. Other
+      // fingers ending (e.g. the mobile jump button being released)
+      // must not clear our steering state.
+      if (e && !this._isOurChangedTouch(e)) return;
       // First jump already fired on touch-down. On release we just stop
       // holding (closes parachute) and clear pending double-jump timer.
       this._cancelTapHoldTimers();
+      this._touchId = null;
       this.touchActive = false;
       this.touchDeltaX = 0;
       this._verticalLocked = false;
       this._horizontalLocked = false;
-      this.jumpHeld = false;
+      this._gestureJumpHeld = false;
       this._jumpEmitted = false;
       this._duckEmitted = false;
     };
     this.element.addEventListener('touchend', endTouch, { passive: false });
     this.element.addEventListener('touchcancel', endTouch, { passive: false });
+  }
+
+  // Locate our tracked finger inside a TouchEvent. Browsers don't index
+  // touches by identifier so we have to scan; the list is bounded by
+  // active fingers (~2-3 in practice) so this is cheap.
+  _findTouch(e) {
+    if (this._touchId == null) return null;
+    for (let i = 0; i < e.touches.length; i++) {
+      if (e.touches[i].identifier === this._touchId) return e.touches[i];
+    }
+    return null;
+  }
+
+  _isOurChangedTouch(e) {
+    if (this._touchId == null) return false;
+    for (let i = 0; i < e.changedTouches.length; i++) {
+      if (e.changedTouches[i].identifier === this._touchId) return true;
+    }
+    return false;
   }
 
   _cancelTapHoldTimers() {
@@ -297,7 +349,7 @@ export class InputManager {
           this._refreshAxis();
           break;
         case 'jump':
-          this.jumpHeld = true;
+          this._gestureJumpHeld = true;
           if (!e.repeat) this._emit('up');
           e.preventDefault();
           break;
@@ -320,7 +372,7 @@ export class InputManager {
           this._refreshAxis();
           break;
         case 'jump':
-          this.jumpHeld = false;
+          this._gestureJumpHeld = false;
           break;
       }
     });
@@ -329,7 +381,7 @@ export class InputManager {
       this._leftHeld = false;
       this._rightHeld = false;
       this.horizontalAxis = 0;
-      this.jumpHeld = false;
+      this._gestureJumpHeld = false;
     });
   }
 
