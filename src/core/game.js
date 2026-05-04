@@ -821,6 +821,7 @@ export class Game {
     this.input.onSwipe = (dir) => this._handleSwipe(dir);
     this._applySettings();
     this._wireSettingsUI();
+    this._wireMobileJumpButton();
 
     // UI — every gameplay-start click is also the moment to unlock the
     // SFX library so iOS / mobile Safari permits later automatic plays.
@@ -890,6 +891,27 @@ export class Game {
         try { this.bgMusic.pause(); } catch (e) {}
       }
     }
+  }
+
+  // Touch-only jump button. CSS controls visibility (mobile-only via
+  // hover:none + pointer:coarse media query). On tap it fires the same
+  // entry point as the keyboard jump key, so first tap = ground jump and
+  // any subsequent tap while airborne = double jump (handled by
+  // _handleSwipe based on isJumping/airborneFromRamp state).
+  _wireMobileJumpButton() {
+    const btn = document.getElementById('mobile-jump-btn');
+    if (!btn) return;
+    const fire = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (this.sounds && this.sounds.unlock) this.sounds.unlock();
+      this._handleSwipe('up');
+    };
+    // touchstart for instant response on iOS (no 300ms tap delay), click
+    // as a fallback for Android browsers that don't fire touchstart on
+    // overlay buttons in some edge cases.
+    btn.addEventListener('touchstart', fire, { passive: false });
+    btn.addEventListener('click', fire);
   }
 
   _wireSettingsUI() {
