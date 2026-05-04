@@ -5179,6 +5179,9 @@ export class Game {
     this.hud.style.display = 'block';
     this.startTime = performance.now();
     this.clock.start();
+    // Cut anything still ringing from a previous round (death_cam tail,
+    // pending drone alert, etc.) so game_start plays clean.
+    if (this.sounds) this.sounds.stopAllSources();
     this._playBgMusic();
     this.sounds.play('game_start');
   }
@@ -5395,6 +5398,9 @@ export class Game {
     this.hud.style.display = 'block';
     this.state = 'playing';
     this.clock.start();
+    // Cut anything still ringing from the previous round (death_cam tail,
+    // pending drone alert, etc.) so game_start plays clean.
+    if (this.sounds) this.sounds.stopAllSources();
     // Music restarts from the top with each new round
     this._playBgMusic();
     // Fire game_start every restart too — picks one clip at random from
