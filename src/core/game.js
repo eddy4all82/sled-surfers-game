@@ -4644,15 +4644,14 @@ export class Game {
   _die(position, hitType, title) {
     if (this.state !== 'playing') return;
     this._pendingGameOverTitle = title || 'CRASHED!';
-    // bgMusic keeps playing into the death cam — _explode() ducks it
-    // to 0.5 for the orbit window. _showGameOverScreen() stops it
-    // when the UI takes over.
+    // bgMusic keeps playing during the crash impact sound. The death-cam
+    // audio sequence (stop SFX, stop bgMusic, play death_cam stinger)
+    // fires once the crash clip finishes — see beginDeathCamAudio below.
     // Snapshot the crash spot + identify the object that killed us so the
     // post-death camera can frame BOTH in view.
     this._crashPos = position.clone();
     this._killer   = this._findKillerObject(position, hitType);
     this._deathCamElapsed = 0;
-    // this.sounds.stop('ramp');
     // Plant a flag at the death spot showing the distance reached
     this._placeDeathFlag(position, this.distance);
     this._explode(position.clone(), hitType || 'car');
@@ -4661,8 +4660,32 @@ export class Game {
     // has any clips, otherwise 'crash'.
     const kind = (this._killer && this._killer.kind) || hitType || 'crash';
     const variant = `crash_${kind}`;
-    if (this.sounds.getSounds(variant).length > 0) this.sounds.play(variant);
-    else this.sounds.play('crash');
+    const crashSrc = (this.sounds.getSounds(variant).length > 0)
+      ? this.sounds.play(variant)
+      : this.sounds.play('crash');
+    const beginDeathCamAudio = () => {
+      // Restart can interrupt the crash mid-flight via stopAllSources();
+      // in that case we don't want to start the death-cam sequence
+      // because we're no longer in 'exploding' state.
+      if (this.state !== 'exploding') return;
+      if (this.sounds) this.sounds.stopAllSources();
+      this._stopBgMusic();
+      if (this.sounds) this.sounds.play('death_cam');
+    };
+    if (crashSrc) {
+      // Chain after the SoundLibrary's own onended (which removes the
+      // source from _liveSources) so cleanup runs first, then ours.
+      const prev = crashSrc.onended;
+      crashSrc.onended = (e) => {
+        if (prev) { try { prev(e); } catch (err) { /* ignore */ } }
+        beginDeathCamAudio();
+      };
+    } else {
+      // No crash source returned (silent event, buffer not yet loaded,
+      // disabled SFX) — fire the death-cam sequence immediately rather
+      // than wait for an event that will never come.
+      beginDeathCamAudio();
+    }
   }
 
   // Walk the world for the closest object that could have caused the hit.
@@ -4804,13 +4827,10 @@ export class Game {
 
   _explode(position, hitType) {
     this.state = 'exploding';
-    // Death-cam audio sequence: silence the entire SFX layer (sled
-    // loops, drone alerts, anything still playing the crash variant),
-    // hard-stop bgMusic for clean cinematic silence, then play the
-    // dedicated death_cam stinger on the priority bus.
-    if (this.sounds) this.sounds.stopAllSources();
-    this._stopBgMusic();
-    if (this.sounds) this.sounds.play('death_cam');
+    // Visuals start immediately (orbit camera, particles); the audio
+    // sequence (stop SFX, stop bgMusic, play death_cam) is deferred
+    // until the crash clip finishes — wired in _die() via the crash
+    // source's onended.
     this._explosionParticles = [];
     this._secondaryExplosions = [];
     this._explosionDecel = 0;
