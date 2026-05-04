@@ -64,17 +64,23 @@
  */
 
 // Each event is either a string[] (legacy: pool of file paths) or
-// { files, gain, active }:
+// { files, gain, active, priority }:
 //
-//   files  — string[] of paths in the random pool
-//   gain   — per-event volume multiplier (1.0 = no change). Use to
-//            compensate for clips mastered louder/quieter than the
-//            rest of the library, without re-encoding source files.
-//              0.7 = trim a loud clip
-//              1.6 = boost a quiet voice clip
-//   active — boolean (default true). When false, play() is a no-op
-//            for this event — quick way to mute one trigger without
-//            touching its callsites.
+//   files    — string[] of paths in the random pool
+//   gain     — per-event volume multiplier (1.0 = no change). Use to
+//              compensate for clips mastered louder/quieter than the
+//              rest of the library, without re-encoding source files.
+//                0.7 = trim a loud clip
+//                1.6 = boost a quiet voice clip
+//   active   — boolean (default true). When false, play() is a no-op
+//              for this event — quick way to mute one trigger without
+//              touching its callsites.
+//   priority — boolean (default false). When true, the event plays
+//              through the master bus directly and is NOT ducked when
+//              other events with sfxTo trigger the SFX duck. Use for
+//              high-importance one-shots (crash, win) that should
+//              never sit under a drone alert. (Events that trigger
+//              ducking via sfxTo are automatically priority too.)
 //
 // Per-call opts.volume in play() multiplies on top of `gain`.
 export const SOUND_EVENTS = {
@@ -90,11 +96,11 @@ export const SOUND_EVENTS = {
   double_jump:   { active: true, gain: 1.0, files: [] },
   parachute:     { active: true, gain: 0.9, files: ['/audio/parachute.mp3'] },
   ramp_launch:   { active: true, gain: 0.85, files: ['/audio/ramp.mp3'] },
-  crash:         { active: true, gain: 1.0, files: ['/audio/crash.mp3'] },
-  crash_lamp:    { active: true, gain: 1.0, files: [] },
-  crash_tree:    { active: true, gain: 1.0, files: [] },
-  crash_rock:    { active: true, gain: 1.0, files: [] },
-  crash_car:     { active: true, gain: 1.0, files: [] },
+  crash:         { active: true, gain: 1.0, priority: true, files: ['/audio/crash.mp3'] },
+  crash_lamp:    { active: true, gain: 1.0, priority: true, files: [] },
+  crash_tree:    { active: true, gain: 1.0, priority: true, files: [] },
+  crash_rock:    { active: true, gain: 1.0, priority: true, files: [] },
+  crash_car:     { active: true, gain: 1.0, priority: true, files: [] },
   drone_alert:   { active: true, gain: 3.0, files: ['/audio/rocket1.m4a'] },
   drone_approch: { active: true, gain: 4.0, files: [
     '/audio/close-drone.mp3',
@@ -240,11 +246,14 @@ export class SoundLibrary {
       this._loadBuffer(path);
       return null;
     }
-    // Priority events (sfxTo defined in EVENT_DUCK) bypass the
-    // duckable bus so they don't dim themselves. All other events go
-    // through _otherSfxGain so a priority event can duck them.
+    // Priority events bypass the duckable bus. Two ways to be priority:
+    //   1. entry.priority = true (e.g. crash) — never gets ducked, but
+    //      doesn't itself trigger a duck.
+    //   2. EVENT_DUCK[name].sfxTo is set — ducks others AND bypasses
+    //      its own duck so it isn't dimmed by the duck it triggered.
     const duckCfg = this._duck[eventName];
-    const isPriority = !!(duckCfg && typeof duckCfg.sfxTo === 'number');
+    const triggersDuck = !!(duckCfg && typeof duckCfg.sfxTo === 'number');
+    const isPriority = entry.priority === true || triggersDuck;
     const targetBus = isPriority ? this._destinationGain : this._otherSfxGain;
     let source;
     try {
@@ -268,9 +277,9 @@ export class SoundLibrary {
     }
     // Fire bgMusic duck hook (host-handled)
     if (duckCfg && this._onDuck) this._onDuck(duckCfg);
-    // Fire SFX-bus duck for priority events (library-handled).
+    // Fire SFX-bus duck for events whose duck config defines sfxTo.
     // Default duration = clip length so 'until they're playing' is exact.
-    if (isPriority) {
+    if (triggersDuck) {
       const sfxDur = duckCfg.sfxDurationMs != null
         ? duckCfg.sfxDurationMs
         : Math.max(50, Math.round(buffer.duration * 1000));
@@ -434,14 +443,16 @@ export class SoundLibrary {
 
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
-// Accept legacy array shape OR { files, gain, active }; always store
-// the expanded form so play()/preloadAll() have one path to read from.
+// Accept legacy array shape OR { files, gain, active, priority };
+// always store the expanded form so play()/preloadAll() have one
+// path to read from.
 function normalizeEntry(entry) {
-  if (!entry) return { files: [], gain: 1.0, active: true };
-  if (Array.isArray(entry)) return { files: entry.slice(), gain: 1.0, active: true };
+  if (!entry) return { files: [], gain: 1.0, active: true, priority: false };
+  if (Array.isArray(entry)) return { files: entry.slice(), gain: 1.0, active: true, priority: false };
   return {
-    files:  Array.isArray(entry.files) ? entry.files.slice() : [],
-    gain:   typeof entry.gain === 'number' ? entry.gain : 1.0,
-    active: entry.active !== false,
+    files:    Array.isArray(entry.files) ? entry.files.slice() : [],
+    gain:     typeof entry.gain === 'number' ? entry.gain : 1.0,
+    active:   entry.active !== false,
+    priority: entry.priority === true,
   };
 }
