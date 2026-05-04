@@ -119,6 +119,12 @@ export const EVENT_DUCK = {
   game_start:    { to: 0.15, durationMs: 4000 },
   drone_alert:   { to: 0.15, durationMs: 1500 },
   drone_approch: { to: 0.15, durationMs: 2000 },
+  // Game-feel ducks: short dips so important moments cut through music.
+  // Re-triggers extend rather than stack, so rapid jumps don't pulse weirdly.
+  crash:         { to: 0.25, durationMs: 1200 },
+  win:           { to: 0.20, durationMs: 3000 },
+  ramp_launch:   { to: 0.50, durationMs: 600 },
+  parachute:     { to: 0.60, durationMs: 800 },
 };
 
 export class SoundLibrary {
