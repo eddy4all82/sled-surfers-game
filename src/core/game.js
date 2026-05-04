@@ -179,10 +179,17 @@ export class Game {
     // keeps playing through gameplay, the explosion, and the game-over /
     // game-won screens. Only stops when a brand-new round starts (so it
     // restarts from the top of the track).
-    this.bgMusic = new Audio('/audio/game-music.mp3');
+    // Pool of looping background tracks. Each new round picks one at
+     // random; the chosen track then loops untouched until the next round.
+    this.bgMusicPool = [
+      '/audio/game-music.mp3',
+      '/audio/game_music2.mp3',
+    ];
+    this.bgMusic = new Audio();
     this.bgMusic.loop = true;
     this.bgMusic.volume = 0.35;
     this.bgMusic.preload = 'auto';
+    this._currentMusicSrc = null;
     this._musicShouldPlay = false;
     // Manual-loop fallback for browsers where the `loop` flag misbehaves
     this.bgMusic.addEventListener('ended', () => {
@@ -5165,6 +5172,15 @@ export class Game {
     if (this.settings && this.settings.musicEnabled === false) {
       this._musicShouldPlay = false;
       return;
+    }
+    // Pick one track from the pool at random for THIS round. The chosen
+    // track keeps looping until the next round picks again.
+    const pool = this.bgMusicPool && this.bgMusicPool.length
+      ? this.bgMusicPool : ['/audio/game-music.mp3'];
+    const picked = pool[Math.floor(Math.random() * pool.length)];
+    if (picked !== this._currentMusicSrc) {
+      this._currentMusicSrc = picked;
+      this.bgMusic.src = picked;
     }
     // Rewind so each new round starts at the top of the track
     try { this.bgMusic.currentTime = 0; } catch (e) { /* not yet loaded */ }
