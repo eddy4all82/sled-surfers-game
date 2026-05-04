@@ -952,7 +952,7 @@ export class Game {
     if (wantParachute) {
       btn.classList.add('parachute-mode');
       btn.setAttribute('aria-label', 'Parachute');
-      btn.querySelector('.label').textContent = 'PARACHUTE';
+      btn.querySelector('.label').textContent = 'PARA';
     } else {
       btn.classList.remove('parachute-mode');
       btn.setAttribute('aria-label', 'Jump');
