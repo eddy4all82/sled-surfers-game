@@ -4806,10 +4806,10 @@ export class Game {
     this.state = 'exploding';
     // Death-cam audio sequence: silence the entire SFX layer (sled
     // loops, drone alerts, anything still playing the crash variant),
-    // mute bgMusic for the 4.5s orbit, then play the dedicated
-    // death_cam stinger on the priority bus.
+    // hard-stop bgMusic for clean cinematic silence, then play the
+    // dedicated death_cam stinger on the priority bus.
     if (this.sounds) this.sounds.stopAllSources();
-    this._duckBgMusic(0, 4500);
+    this._stopBgMusic();
     if (this.sounds) this.sounds.play('death_cam');
     this._explosionParticles = [];
     this._secondaryExplosions = [];
