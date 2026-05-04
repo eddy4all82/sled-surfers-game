@@ -64,55 +64,50 @@
  */
 
 // Each event is either a string[] (legacy: pool of file paths) or
-// { files: string[], gain: number } where `gain` is a per-event volume
-// multiplier applied at play time. Use gain to compensate for clips
-// that are mastered louder/quieter than the rest of the library —
-// without re-encoding the source files.
+// { files, gain, active }:
 //
-//   1.0 = no change (default)
-//   0.7 = quieter (loud clip; trim it down)
-//   1.6 = louder  (quiet voice clip; boost it)
+//   files  — string[] of paths in the random pool
+//   gain   — per-event volume multiplier (1.0 = no change). Use to
+//            compensate for clips mastered louder/quieter than the
+//            rest of the library, without re-encoding source files.
+//              0.7 = trim a loud clip
+//              1.6 = boost a quiet voice clip
+//   active — boolean (default true). When false, play() is a no-op
+//            for this event — quick way to mute one trigger without
+//            touching its callsites.
 //
-// Per-call opts.volume in play() multiplies on top of this gain.
+// Per-call opts.volume in play() multiplies on top of `gain`.
 export const SOUND_EVENTS = {
   // Voice barks tend to be ~6 dB quieter than mastered SFX.
-  game_start:  { gain: 1.6, files: [
+  game_start:  { active: true, gain: 1.6, files: [
     '/audio/new1.m4a',
     '/audio/estorha.m4a',
     '/audio/halhala.m4a',
     '/audio/weal.m4a',
   ]},
-  coin_pickup: { gain: 1.0, files: [
-    '/audio/coin.mp3?v=2',
-  ]},
-  jump:        { gain: 1.0, files: ['/audio/jump.mp3'] },
-  double_jump: { gain: 1.0, files: [] },
-  parachute:   { gain: 0.9, files: ['/audio/parachute.mp3'] },
-  ramp_launch: { gain: 0.85, files: ['/audio/ramp.mp3'] },
-  crash:       { gain: 1.0, files: ['/audio/crash.mp3'] },
-  crash_lamp:  { gain: 1.0, files: [] },
-  crash_tree:  { gain: 1.0, files: [] },
-  crash_rock:  { gain: 1.0, files: [] },
-  crash_car:   { gain: 1.0, files: [] },
-  drone_alert:   { gain: 1.3, files: ['/audio/rocket1.m4a'] },
-  drone_approch: { gain: 1.5, files: [
+  coin_pickup:   { active: true, gain: 1.0, files: ['/audio/coin.mp3?v=2'] },
+  jump:          { active: true, gain: 1.0, files: ['/audio/jump.mp3'] },
+  double_jump:   { active: true, gain: 1.0, files: [] },
+  parachute:     { active: true, gain: 0.9, files: ['/audio/parachute.mp3'] },
+  ramp_launch:   { active: true, gain: 0.85, files: ['/audio/ramp.mp3'] },
+  crash:         { active: true, gain: 1.0, files: ['/audio/crash.mp3'] },
+  crash_lamp:    { active: true, gain: 1.0, files: [] },
+  crash_tree:    { active: true, gain: 1.0, files: [] },
+  crash_rock:    { active: true, gain: 1.0, files: [] },
+  crash_car:     { active: true, gain: 1.0, files: [] },
+  drone_alert:   { active: true, gain: 1.3, files: ['/audio/rocket1.m4a'] },
+  drone_approch: { active: true, gain: 1.5, files: [
     '/audio/close-drone.mp3',
     '/audio/asrfha.m4a',
     '/audio/fake.m4a',
     '/audio/rocket2.m4a',
     '/audio/elhakona.m4a',
   ]},
-  car_approach: { gain: 1.2, files: [
-    '/audio/close-car.mp3',
-  ]},
-  landing: { gain: 1.0, files: [
-    '/audio/landing.mp3',
-  ]},
-  sled: { gain: 0.7, files: [
-    '/audio/snow-slide.mp3',
-  ]},
-  speed_up:    { gain: 0.85, files: ['/audio/yahoo.mp3'] },
-  win:         { gain: 1.0, files: [] },
+  car_approach:  { active: true, gain: 1.2, files: ['/audio/close-car.mp3'] },
+  landing:       { active: true, gain: 1.0, files: ['/audio/landing.mp3'] },
+  sled:          { active: true, gain: 0.7, files: ['/audio/snow-slide.mp3'] },
+  speed_up:      { active: true, gain: 0.85, files: ['/audio/yahoo.mp3'] },
+  win:           { active: true, gain: 1.0, files: [] },
 };
 
 export const EVENT_DUCK = {
@@ -207,6 +202,8 @@ export class SoundLibrary {
     if (!this._enabled) return null;
     const entry = this._events[eventName];
     if (!entry || !entry.files || entry.files.length === 0) return null;
+    // Per-event active flag — false silences this trigger entirely.
+    if (entry.active === false) return null;
     const ctx = this._ctx;
     if (!ctx) return null;
     const path = entry.files[Math.floor(Math.random() * entry.files.length)];
@@ -268,6 +265,17 @@ export class SoundLibrary {
     const entry = this._events[eventName];
     if (!entry) return;
     entry.gain = typeof gain === 'number' ? gain : 1.0;
+  }
+
+  /** Toggle a single event on/off. Inactive events silently skip play(). */
+  setEventActive(eventName, on) {
+    const entry = this._events[eventName];
+    if (!entry) return;
+    entry.active = !!on;
+  }
+  isEventActive(eventName) {
+    const entry = this._events[eventName];
+    return !!(entry && entry.active !== false);
   }
 
   getSounds(eventName) {
@@ -356,13 +364,14 @@ export class SoundLibrary {
 
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
-// Accept legacy array shape OR { files, gain }; always store the
-// expanded form so play()/preloadAll() have one path to read from.
+// Accept legacy array shape OR { files, gain, active }; always store
+// the expanded form so play()/preloadAll() have one path to read from.
 function normalizeEntry(entry) {
-  if (!entry) return { files: [], gain: 1.0 };
-  if (Array.isArray(entry)) return { files: entry.slice(), gain: 1.0 };
+  if (!entry) return { files: [], gain: 1.0, active: true };
+  if (Array.isArray(entry)) return { files: entry.slice(), gain: 1.0, active: true };
   return {
-    files: Array.isArray(entry.files) ? entry.files.slice() : [],
-    gain:  typeof entry.gain === 'number' ? entry.gain : 1.0,
+    files:  Array.isArray(entry.files) ? entry.files.slice() : [],
+    gain:   typeof entry.gain === 'number' ? entry.gain : 1.0,
+    active: entry.active !== false,
   };
 }
