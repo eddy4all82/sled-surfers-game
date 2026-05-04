@@ -113,7 +113,7 @@ export const SOUND_EVENTS = {
   landing:       { active: true, gain: 1.0, files: ['/audio/landing.mp3'] },
   sled:          { active: true, gain: 0.4, files: ['/audio/snow-slide.mp3'] },
   speed_up:      { active: true, gain: 0.85, files: ['/audio/yahoo.mp3'] },
-  win:           { active: true, gain: 1.0, files: [] },
+  win:           { active: true, gain: 1.0, files: ['/audio/yaret.m4a'] },
   // Cinematic death-cam stinger. Fires when the orbit camera starts
   // after a crash. Priority bus = not affected by any duck. The host
   // calls stopAllSources() before play() so this clip plays clean
@@ -121,7 +121,6 @@ export const SOUND_EVENTS = {
   death_cam:     { active: true, gain: 1.0, priority: true, files: [
     '/audio/3bmageed.m4a',
     '/audio/Gorsa.m4a',
-    '/audio/yaret.m4a',
     '/audio/bayza.m4a',
     '/audio/yalhakny.m4a',
     '/audio/Bethazar.m4a',
