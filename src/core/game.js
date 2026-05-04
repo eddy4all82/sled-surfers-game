@@ -181,7 +181,7 @@ export class Game {
     // restarts from the top of the track).
     this.bgMusic = new Audio('/audio/game-music.mp3');
     this.bgMusic.loop = true;
-    this.bgMusic.volume = 0.55;
+    this.bgMusic.volume = 0.35;
     this.bgMusic.preload = 'auto';
     this._musicShouldPlay = false;
     // Manual-loop fallback for browsers where the `loop` flag misbehaves

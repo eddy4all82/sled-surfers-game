@@ -11,7 +11,7 @@ const STORAGE_KEY = 'sledSurfers.settings.v1';
 
 export const DEFAULT_SETTINGS = Object.freeze({
   // Audio
-  musicVolume:    0.55,    // 0..1
+  musicVolume:    0.35,    // 0..1
   musicEnabled:   true,
   sfxEnabled:     true,    // applies to future sound-library SFX
 
