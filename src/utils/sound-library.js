@@ -121,8 +121,8 @@ export const SOUND_EVENTS = {
 //                               finishes if sfxDurationMs is omitted).
 //                             • Re-triggers extend; never stack.
 export const EVENT_DUCK = {
-  drone_alert:   { to: 0.15, durationMs: 1500, sfxTo: 0.5 },
-  drone_approch: { to: 0.15, durationMs: 2000, sfxTo: 0.5 },
+  drone_alert:   { to: 0.15, durationMs: 1500, sfxTo: 0.8 },
+  drone_approch: { to: 0.15, durationMs: 2000, sfxTo: 0.8 },
   // Game-feel ducks: short dips so important moments cut through music.
   // Re-triggers extend rather than stack, so rapid jumps don't pulse weirdly.
   crash:         { to: 0.25, durationMs: 1200 },
