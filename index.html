@@ -825,8 +825,11 @@
     }
     #mobile-jump-btn.parachute-mode .icon-jump      { display: none; }
     #mobile-jump-btn.parachute-mode .icon-parachute { display: block; }
+    /* Only render on touch-only devices AND only while the game is in
+       its active 'playing' state. Class .game-active is toggled by the
+       game loop in _updateMobileJumpButton(). */
     @media (hover: none) and (pointer: coarse) {
-      #mobile-jump-btn { display: flex; flex-direction: column; align-items: center; justify-content: center; }
+      #mobile-jump-btn.game-active { display: flex; flex-direction: column; align-items: center; justify-content: center; }
     }
   </style>
 </head>

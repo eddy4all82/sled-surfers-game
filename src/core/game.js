@@ -939,17 +939,32 @@ export class Game {
     btn.addEventListener('mouseleave', release);
   }
 
-  // Flip button label/style based on whether the player is airborne.
-  // Called every frame from _loop. Cheap — just two DOM writes when state
-  // actually changes; otherwise a noop check.
+  // Toggle button visibility + label/style based on game state. Called
+  // every frame from _loop. Cheap — only writes the DOM when the visible
+  // mode actually changes.
+  //
+  //   • Hidden when state !== 'playing' (loading, ready, exploding,
+  //     gameover, won). CSS .game-active class gates visibility.
+  //   • While playing, label flips between JUMP (on ground) and PARA
+  //     (airborne) to match the active behavior.
   _updateMobileJumpButton() {
     const btn = this._mobileJumpBtn;
     if (!btn) return;
+    const playing = this.state === 'playing';
+    if (playing !== this._mobileJumpBtnActive) {
+      this._mobileJumpBtnActive = playing;
+      btn.classList.toggle('game-active', playing);
+      // Defensive: clear any lingering held state when hiding so an
+      // unreleased finger from a mid-press game-over doesn't keep
+      // jumpHeld true into the next round.
+      if (!playing && this.input) this.input.setExternalJumpHeld(false);
+    }
+    if (!playing) return;
+
     const airborne = this.isJumping || this.airborneFromRamp || this.playerY > 0.05;
-    const wantParachute = airborne && this.state === 'playing';
-    if (wantParachute === this._mobileJumpBtnWasAirborne) return;
-    this._mobileJumpBtnWasAirborne = wantParachute;
-    if (wantParachute) {
+    if (airborne === this._mobileJumpBtnWasAirborne) return;
+    this._mobileJumpBtnWasAirborne = airborne;
+    if (airborne) {
       btn.classList.add('parachute-mode');
       btn.setAttribute('aria-label', 'Parachute');
       btn.querySelector('.label').textContent = 'PARA';
