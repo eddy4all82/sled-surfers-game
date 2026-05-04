@@ -179,18 +179,23 @@ export class Game {
     // keeps playing through gameplay, the explosion, and the game-over /
     // game-won screens. Only stops when a brand-new round starts (so it
     // restarts from the top of the track).
-    // Pool of looping background tracks. Each new round picks one at
-     // random; the chosen track then loops untouched until the next round.
+    // Pool of looping background tracks. Each entry has its own `gain`
+    // multiplier so tracks mastered at different loudness levels can
+    // be balanced without re-encoding the source files. The chosen
+    // track's gain compounds with the user's musicVolume setting and
+    // any active duck — see _setMusicVolume() for the full chain.
     this.bgMusicPool = [
-      '/audio/game-music.mp3',
-      '/audio/game_music2.mp3',
+      { src: '/audio/game-music.mp3',  gain: 1.0 },
+      { src: '/audio/game_music2.mp3', gain: 1.6 },
     ];
     this.bgMusic = new Audio();
     this.bgMusic.loop = true;
-    this.bgMusic.volume = 0.35;
     this.bgMusic.preload = 'auto';
     this._currentMusicSrc = null;
+    this._currentMusicGain = 1.0;
+    this._currentDuckFactor = 1.0;
     this._musicShouldPlay = false;
+    this.bgMusic.volume = 0.35;
     // Manual-loop fallback for browsers where the `loop` flag misbehaves
     this.bgMusic.addEventListener('ended', () => {
       if (this._musicShouldPlay) {
@@ -888,7 +893,7 @@ export class Game {
     }
     if (this.sounds) this.sounds.setEnabled(s.sfxEnabled);
     if (this.bgMusic) {
-      this.bgMusic.volume = Math.max(0, Math.min(1, s.musicVolume));
+      this._setMusicVolume();
       if (s.musicEnabled) {
         this._musicShouldPlay = true;
         if (this.state === 'playing') this._playBgMusic();
@@ -1005,7 +1010,7 @@ export class Game {
     if (volSlider) volSlider.addEventListener('input', () => {
       this.settings.musicVolume = parseInt(volSlider.value, 10) / 100;
       if (volLabel) volLabel.textContent = `${volSlider.value}%`;
-      if (this.bgMusic) this.bgMusic.volume = this.settings.musicVolume;
+      this._setMusicVolume();
       saveSettings(this.settings);
     });
 
@@ -5176,12 +5181,17 @@ export class Game {
     // Pick one track from the pool at random for THIS round. The chosen
     // track keeps looping until the next round picks again.
     const pool = this.bgMusicPool && this.bgMusicPool.length
-      ? this.bgMusicPool : ['/audio/game-music.mp3'];
+      ? this.bgMusicPool : [{ src: '/audio/game-music.mp3', gain: 1.0 }];
     const picked = pool[Math.floor(Math.random() * pool.length)];
-    if (picked !== this._currentMusicSrc) {
-      this._currentMusicSrc = picked;
-      this.bgMusic.src = picked;
+    const src  = typeof picked === 'string' ? picked : picked.src;
+    const gain = typeof picked === 'string' ? 1.0    : (picked.gain ?? 1.0);
+    if (src !== this._currentMusicSrc) {
+      this._currentMusicSrc = src;
+      this.bgMusic.src = src;
     }
+    this._currentMusicGain = gain;
+    this._currentDuckFactor = 1.0;        // fresh round = fresh duck state
+    this._setMusicVolume();
     // Rewind so each new round starts at the top of the track
     try { this.bgMusic.currentTime = 0; } catch (e) { /* not yet loaded */ }
     this._musicShouldPlay = true;
@@ -5224,6 +5234,19 @@ export class Game {
     });
   }
 
+  // Single source of truth for bgMusic.volume. Compounds:
+  //   user-slider × per-track gain × current duck factor
+  // and clamps to [0, 1]. All bgMusic volume writes funnel through here.
+  _setMusicVolume() {
+    if (!this.bgMusic) return;
+    const userVol = (this.settings && typeof this.settings.musicVolume === 'number')
+      ? this.settings.musicVolume : 0.35;
+    const trackGain = this._currentMusicGain || 1.0;
+    const duck = this._currentDuckFactor || 1.0;
+    const v = userVol * trackGain * duck;
+    this.bgMusic.volume = Math.max(0, Math.min(1, v));
+  }
+
   // Temporarily lower the bg-music volume — called via the SoundLibrary
   // onDuck hook for events configured in EVENT_DUCK. Re-triggers extend
   // (don't stack) the dip duration.
@@ -5231,12 +5254,13 @@ export class Game {
   //   ms         = how long to hold the dip; restores after that
   _duckBgMusic(toFraction, ms) {
     if (!this.bgMusic || !this.settings.musicEnabled) return;
-    const base = this.settings.musicVolume;
-    this.bgMusic.volume = Math.max(0, base * Math.max(0, Math.min(1, toFraction)));
+    this._currentDuckFactor = Math.max(0, Math.min(1, toFraction));
+    this._setMusicVolume();
     if (this._duckRestoreTimer) clearTimeout(this._duckRestoreTimer);
     this._duckRestoreTimer = setTimeout(() => {
       if (this.bgMusic && this.settings.musicEnabled) {
-        this.bgMusic.volume = this.settings.musicVolume;
+        this._currentDuckFactor = 1.0;
+        this._setMusicVolume();
       }
       this._duckRestoreTimer = null;
     }, Math.max(0, ms));
