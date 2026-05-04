@@ -894,24 +894,70 @@ export class Game {
   }
 
   // Touch-only jump button. CSS controls visibility (mobile-only via
-  // hover:none + pointer:coarse media query). On tap it fires the same
-  // entry point as the keyboard jump key, so first tap = ground jump and
-  // any subsequent tap while airborne = double jump (handled by
-  // _handleSwipe based on isJumping/airborneFromRamp state).
+  // hover:none + pointer:coarse media query).
+  //
+  // Behavior:
+  //   • On ground (label = "JUMP")     — press fires _handleSwipe('up')
+  //                                       (single ground jump).
+  //   • Airborne  (label = "PARACHUTE") — press fires _handleSwipe('up')
+  //                                       (multi-jump + arms parachute);
+  //                                       holding sets input.jumpHeld so
+  //                                       the armed parachute opens AND
+  //                                       stays open while energy lasts.
+  //                                       Release closes the parachute via
+  //                                       the existing jumpHeld watcher in
+  //                                       _update (line ~5529).
+  // The label flips automatically each frame in _updateMobileJumpButton().
   _wireMobileJumpButton() {
     const btn = document.getElementById('mobile-jump-btn');
     if (!btn) return;
-    const fire = (e) => {
+    this._mobileJumpBtn = btn;
+    this._mobileJumpHeld = false;
+
+    const press = (e) => {
       e.preventDefault();
       e.stopPropagation();
       if (this.sounds && this.sounds.unlock) this.sounds.unlock();
+      this._mobileJumpHeld = true;
+      // Mirror the touch-input contract: a sustained press IS jumpHeld.
+      // Required for parachute arming → opening transition.
+      if (this.input) this.input.jumpHeld = true;
       this._handleSwipe('up');
     };
-    // touchstart for instant response on iOS (no 300ms tap delay), click
-    // as a fallback for Android browsers that don't fire touchstart on
-    // overlay buttons in some edge cases.
-    btn.addEventListener('touchstart', fire, { passive: false });
-    btn.addEventListener('click', fire);
+    const release = (e) => {
+      if (e) { e.preventDefault(); e.stopPropagation(); }
+      this._mobileJumpHeld = false;
+      if (this.input) this.input.jumpHeld = false;
+    };
+
+    btn.addEventListener('touchstart', press, { passive: false });
+    btn.addEventListener('touchend', release, { passive: false });
+    btn.addEventListener('touchcancel', release, { passive: false });
+    // Mouse fallback for DevTools device emulation / desktop testing.
+    btn.addEventListener('mousedown', press);
+    btn.addEventListener('mouseup', release);
+    btn.addEventListener('mouseleave', release);
+  }
+
+  // Flip button label/style based on whether the player is airborne.
+  // Called every frame from _loop. Cheap — just two DOM writes when state
+  // actually changes; otherwise a noop check.
+  _updateMobileJumpButton() {
+    const btn = this._mobileJumpBtn;
+    if (!btn) return;
+    const airborne = this.isJumping || this.airborneFromRamp || this.playerY > 0.05;
+    const wantParachute = airborne && this.state === 'playing';
+    if (wantParachute === this._mobileJumpBtnWasAirborne) return;
+    this._mobileJumpBtnWasAirborne = wantParachute;
+    if (wantParachute) {
+      btn.classList.add('parachute-mode');
+      btn.setAttribute('aria-label', 'Parachute');
+      btn.querySelector('.label').textContent = 'PARACHUTE';
+    } else {
+      btn.classList.remove('parachute-mode');
+      btn.setAttribute('aria-label', 'Jump');
+      btn.querySelector('.label').textContent = 'JUMP';
+    }
   }
 
   _wireSettingsUI() {
@@ -5393,6 +5439,8 @@ export class Game {
         c.rotation.z += delta * 3;
       }
     });
+
+    this._updateMobileJumpButton();
 
     this.renderer.render(this.scene, this.camera);
   }
