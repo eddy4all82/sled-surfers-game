@@ -105,7 +105,7 @@ export const SOUND_EVENTS = {
   ]},
   car_approach:  { active: true, gain: 1.2, files: ['/audio/close-car.mp3'] },
   landing:       { active: true, gain: 1.0, files: ['/audio/landing.mp3'] },
-  sled:          { active: true, gain: 0.7, files: ['/audio/snow-slide.mp3'] },
+  sled:          { active: true, gain: 0.4, files: ['/audio/snow-slide.mp3'] },
   speed_up:      { active: true, gain: 0.85, files: ['/audio/yahoo.mp3'] },
   win:           { active: true, gain: 1.0, files: [] },
 };
