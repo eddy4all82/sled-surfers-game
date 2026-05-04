@@ -114,6 +114,11 @@ export const SOUND_EVENTS = {
   sled:          { active: true, gain: 0.4, files: ['/audio/snow-slide.mp3'] },
   speed_up:      { active: true, gain: 0.85, files: ['/audio/yahoo.mp3'] },
   win:           { active: true, gain: 1.0, files: [] },
+  // Cinematic death-cam stinger. Fires when the orbit camera starts
+  // after a crash. Priority bus = not affected by any duck. The host
+  // calls stopAllSources() before play() so this clip plays clean
+  // over the silenced SFX layer + the bgMusic duck.
+  death_cam:     { active: true, gain: 1.0, priority: true, files: [] },
 };
 
 // Each entry can configure two independent ducks:
@@ -144,6 +149,9 @@ export class SoundLibrary {
     this._buffers = new Map();               // path → AudioBuffer
     this._loadPromises = new Map();          // path → Promise<AudioBuffer|null>
     this._unlocked = false;
+    // Currently-playing AudioBufferSourceNodes (both buses). Auto-cleared
+    // via onended so this never leaks. stopAllSources() iterates this set.
+    this._liveSources = new Set();
     this._events = {};
     this._enabled = opts.enabled !== false;
     this._volume  = typeof opts.volume === 'number' ? clamp(opts.volume, 0, 1) : 1.0;
@@ -272,6 +280,9 @@ export class SoundLibrary {
         source.connect(targetBus);
       }
       source.start(0);
+      // Track for stopAllSources(); auto-clean on natural end.
+      this._liveSources.add(source);
+      source.onended = () => { this._liveSources.delete(source); };
     } catch (e) {
       return null;
     }
@@ -374,6 +385,34 @@ export class SoundLibrary {
   stopAll() {
     if (this._ctx) {
       try { this._ctx.suspend().then(() => this._ctx.resume()); } catch (e) {}
+    }
+  }
+
+  /**
+   * Hard-stop every currently-playing source on both the duckable and
+   * priority buses. Unlike stopAll() (which only suspends), this calls
+   * source.stop(0) so clips are truly cut and never resume. Use to
+   * silence the SFX layer before a cinematic moment (e.g. death cam).
+   */
+  stopAllSources() {
+    for (const src of this._liveSources) {
+      try { src.onended = null; src.stop(0); } catch (e) { /* ignore */ }
+    }
+    this._liveSources.clear();
+    // Restore the duck state if anything was mid-duck — a death-cam
+    // stop should leave the bus at unity for the next event.
+    if (this._sfxDuckRestoreTimer) {
+      clearTimeout(this._sfxDuckRestoreTimer);
+      this._sfxDuckRestoreTimer = null;
+      this._sfxDuckRestoreAt = 0;
+      if (this._otherSfxGain && this._ctx) {
+        try {
+          const p = this._otherSfxGain.gain;
+          const t = this._ctx.currentTime;
+          p.cancelScheduledValues(t);
+          p.setValueAtTime(1.0, t);
+        } catch (e) { /* ignore */ }
+      }
     }
   }
 

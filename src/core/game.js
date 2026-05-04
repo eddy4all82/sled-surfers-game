@@ -4644,7 +4644,9 @@ export class Game {
   _die(position, hitType, title) {
     if (this.state !== 'playing') return;
     this._pendingGameOverTitle = title || 'CRASHED!';
-    this._stopBgMusic();
+    // bgMusic keeps playing into the death cam — _explode() ducks it
+    // to 0.5 for the orbit window. _showGameOverScreen() stops it
+    // when the UI takes over.
     // Snapshot the crash spot + identify the object that killed us so the
     // post-death camera can frame BOTH in view.
     this._crashPos = position.clone();
@@ -4802,6 +4804,13 @@ export class Game {
 
   _explode(position, hitType) {
     this.state = 'exploding';
+    // Death-cam audio sequence: silence the entire SFX layer (sled
+    // loops, drone alerts, anything still playing the crash variant),
+    // duck bgMusic to 50% for the 4.5s orbit, then play the dedicated
+    // death_cam stinger on the priority bus.
+    if (this.sounds) this.sounds.stopAllSources();
+    this._duckBgMusic(0.5, 4500);
+    if (this.sounds) this.sounds.play('death_cam');
     this._explosionParticles = [];
     this._secondaryExplosions = [];
     this._explosionDecel = 0;
@@ -5118,6 +5127,9 @@ export class Game {
 
   _showGameOverScreen(title) {
     this.state = 'gameover';
+    // Death cam over — UI takes over. Stop the bg track that's been
+    // ducked at 0.5 throughout the orbit; next round picks fresh.
+    this._stopBgMusic();
     this._clearSkyObjects();
     if (this.airTimeEl) this.airTimeEl.classList.remove('active');
     if (this.speedLinesEl) this.speedLinesEl.classList.remove('active');
