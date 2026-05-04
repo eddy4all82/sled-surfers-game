@@ -118,7 +118,23 @@ export const SOUND_EVENTS = {
   // after a crash. Priority bus = not affected by any duck. The host
   // calls stopAllSources() before play() so this clip plays clean
   // over the silenced SFX layer + the bgMusic duck.
-  death_cam:     { active: true, gain: 1.0, priority: true, files: [] },
+  death_cam:     { active: true, gain: 1.0, priority: true, files: [
+    '/audio/3bmageed.m4a',
+    '/audio/Gorsa.m4a',
+    '/audio/yaret.m4a',
+    '/audio/bayza.m4a',
+    '/audio/yalhakny.m4a',
+    '/audio/Bethazar.m4a',
+    '/audio/Wala.m4a',
+    '/audio/Zombie.m4a',
+    '/audio/Hawla3.m4a',
+    '/audio/Za3lan.m4a',
+    '/audio/Rabe3.m4a',
+    '/audio/Kokab.m4a',
+    '/audio/naftry.m4a',
+    '/audio/Seten.m4a',
+    '/audio/Khazok.m4a',
+  ]},
 };
 
 // Each entry can configure two independent ducks:
