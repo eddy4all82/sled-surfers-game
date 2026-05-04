@@ -803,18 +803,19 @@
       background: rgba(255, 107, 53, 0.7);
       transform: scale(0.94);
     }
-    #mobile-jump-btn .arrow {
+    #mobile-jump-btn .icon {
       display: block;
-      font-size: 36px;
       line-height: 1;
       margin-bottom: 2px;
     }
+    #mobile-jump-btn .icon-jump      { font-size: 36px; }
+    #mobile-jump-btn .icon-parachute { font-size: 38px; display: none; }
     #mobile-jump-btn .label {
       display: block;
       font-size: 14px;
       letter-spacing: 0.5px;
     }
-    /* Airborne mode: blue tint + smaller label so PARACHUTE fits cleanly */
+    /* Airborne mode: blue tint + parachute glyph instead of the up-arrow */
     #mobile-jump-btn.parachute-mode {
       background: rgba(80, 160, 255, 0.4);
       border-color: rgba(255, 255, 255, 0.85);
@@ -822,12 +823,9 @@
     #mobile-jump-btn.parachute-mode:active {
       background: rgba(80, 160, 255, 0.75);
     }
-    #mobile-jump-btn.parachute-mode .arrow {
-      font-size: 30px;
-    }
-    #mobile-jump-btn.parachute-mode .label {
-      font-size: 11px;
-    }
+    #mobile-jump-btn.parachute-mode .icon-jump      { display: none; }
+    #mobile-jump-btn.parachute-mode .icon-parachute { display: block; }
+    #mobile-jump-btn.parachute-mode .label          { font-size: 11px; }
     @media (hover: none) and (pointer: coarse) {
       #mobile-jump-btn { display: flex; flex-direction: column; align-items: center; justify-content: center; }
     }
@@ -838,7 +836,8 @@
 
   <!-- Mobile-only jump button (CSS hides it on desktop) -->
   <button id="mobile-jump-btn" type="button" aria-label="Jump">
-    <span class="arrow">&#x25B2;</span>
+    <span class="icon icon-jump">&#x25B2;</span>
+    <span class="icon icon-parachute">&#x1FA82;</span>
     <span class="label">JUMP</span>
   </button>
 
