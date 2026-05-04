@@ -90,6 +90,7 @@ export const SOUND_EVENTS = {
     '/audio/estorha.m4a',
     '/audio/halhala.m4a',
     '/audio/weal.m4a',
+    '/audio/bnro7.m4a',
   ]},
   coin_pickup:   { active: true, gain: 1.0, files: ['/audio/coin.mp3?v=2'] },
   jump:          { active: true, gain: 1.0, files: ['/audio/jump.mp3'] },
