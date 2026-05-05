@@ -658,35 +658,17 @@
       text-transform: lowercase;
       opacity: 0.9;
     }
-    #studio-credit .studio-pill {
-      /* Nintendo-logo style: orange-fill pill with a thick black outline,
-         black text in a rounded sans-serif, and a small ® mark sitting
-         INSIDE the pill, right after the last letter, raised like a
-         superscript. Border-radius 999 keeps the shape a perfect pill
-         regardless of contents. Orange (#ff6b35) is the game's accent
-         colour — also used by the PLAY button and settings close. */
-      background: #ff6b35;
-      color: #000000;
-      font-family: 'Lilita One', 'Helvetica Rounded', 'Nunito',
-                   'Arial Rounded MT', system-ui, sans-serif;
-      font-weight: 400;
-      font-size: 18px;
-      letter-spacing: 0.5px;
-      padding: 4px 18px 5px;
-      border: 2.5px solid #000000;
-      border-radius: 999px;
-      line-height: 1;
-      text-transform: none;
-      white-space: nowrap;
-    }
-    #studio-credit .studio-pill .reg {
-      display: inline-block;
-      vertical-align: super;
-      font-size: 8px;
-      font-weight: 700;
-      font-family: 'Arial', sans-serif;
-      margin-left: 1px;
-      line-height: 1;
+    /* Nintendo-logo style pill rendered as inline SVG so the wordmark
+       can be knocked out of the fill (true transparent letters, not
+       just a colored fill). Pill body is a dark-gray vertical
+       gradient; an SVG mask punches the text out, so whatever sits
+       behind the pill (start-screen sky gradient) shows through.
+       Black outline is drawn as a separate stroked rect on top. */
+    #studio-credit .studio-pill-svg {
+      display: block;
+      height: 36px;
+      width: auto;
+      filter: drop-shadow(0 2px 3px rgba(0,0,0,0.35));
     }
 
     /* ── Settings overlay ───────────────────────────────── */
@@ -951,7 +933,27 @@
     <div id="loading">Loading assets...</div>
     <div id="studio-credit">
       <span class="credit-by">developed by</span>
-      <span class="studio-pill">Mesesilia<span class="reg">&reg;</span></span>
+      <svg class="studio-pill-svg" viewBox="0 0 220 50" xmlns="http://www.w3.org/2000/svg" aria-label="Mesesilia">
+        <defs>
+          <linearGradient id="pillGrad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#5a5a5a" />
+            <stop offset="55%" stop-color="#363636" />
+            <stop offset="100%" stop-color="#1a1a1a" />
+          </linearGradient>
+          <mask id="pillTextMask" maskUnits="userSpaceOnUse" x="0" y="0" width="220" height="50">
+            <rect width="220" height="50" fill="white" />
+            <text x="110" y="34" text-anchor="middle"
+                  font-family="'Lilita One', 'Helvetica Rounded', 'Nunito', sans-serif"
+                  font-size="24" fill="black">Mesesilia<tspan font-size="11" dy="-8">®</tspan></text>
+          </mask>
+        </defs>
+        <!-- Filled pill with text knocked out -->
+        <rect x="2" y="2" width="216" height="46" rx="23"
+              fill="url(#pillGrad)" mask="url(#pillTextMask)" />
+        <!-- Black outline (drawn on top, no mask) -->
+        <rect x="2" y="2" width="216" height="46" rx="23"
+              fill="none" stroke="#000" stroke-width="2.5" />
+      </svg>
     </div>
   </div>
 
