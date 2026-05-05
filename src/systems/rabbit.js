@@ -67,7 +67,9 @@ export class Rabbit {
     this._hopVel = 0;
     this._inHop = false;
     this._lastPeak = JANA_BUNNY.HOP_PEAK_LOW;
-    this._settleT = 0;             // brief settle window after a MEGA landing
+    this._settleT = 0;                  // brief settle window after a MEGA landing
+    this._megaCooldownT = 0;            // seconds until MEGA is available again
+    this._dead = false;                 // set once a fatal collision fires
 
     this._penaltyT = 0;
     this._resolvedThreats = new WeakSet();
@@ -86,6 +88,9 @@ export class Rabbit {
     this._hopVel = 0;
     this._inHop = false;
     this._penaltyT = 0;
+    this._settleT = 0;
+    this._megaCooldownT = 0;
+    this._dead = false;
 
     const root = new THREE.Group();
     root.userData.kind = 'rabbit';
@@ -241,7 +246,7 @@ export class Rabbit {
    *        scenery, buildings, collectibles, courseLength, laneWidth }
    */
   update(delta, env = {}) {
-    if (!this.group) return;
+    if (!this.group || this._dead) return;
     const playerDistance = env.playerDistance || 0;
     const playerSpeed    = (typeof env.playerSpeed === 'number' && env.playerSpeed > 0)
       ? env.playerSpeed : JANA_BUNNY.RABBIT_SPEED;
@@ -252,6 +257,7 @@ export class Rabbit {
     const laneWidth      = env.laneWidth    || this._laneWidth;
     const playerX        = env.playerX      || 0;
     const playerY        = env.playerY      || 0;
+    const onCollide      = typeof env.onRabbitCollide === 'function' ? env.onRabbitCollide : null;
 
     // Build a unified threat set for THIS frame. Each entry has:
     //   { obj, dist, lane, kind, height, len, width, x }
@@ -271,13 +277,13 @@ export class Rabbit {
       playerY,
     });
 
-    // ── 1. Penalty timer
-    if (this._penaltyT > 0) this._penaltyT = Math.max(0, this._penaltyT - delta);
+    // ── 1. Cooldown / settle timers
+    if (this._megaCooldownT > 0) this._megaCooldownT = Math.max(0, this._megaCooldownT - delta);
+    if (this._penaltyT > 0)      this._penaltyT      = Math.max(0, this._penaltyT - delta);
 
     // ── 2. Forward speed (proposed)
     const baseSpeed = playerSpeed * JANA_BUNNY.RABBIT_SPEED_MULT;
-    const speedMul  = this._penaltyT > 0 ? JANA_BUNNY.COLLISION_SPEED_MULT : 1.0;
-    const speed     = baseSpeed * speedMul;
+    const speed     = baseSpeed; // no more penalty multiplier — collisions are now fatal, not slowdowns
 
     // ── 3. Lane planning
     this._planLane(threats, collectibles, playerDistance);
@@ -319,30 +325,58 @@ export class Rabbit {
       }
     }
 
-    // ── 6. HARD PHYSICS — clamp forward advance against any uncleared
-    //       threat ahead. The rabbit physically cannot pass through.
+    // ── 6. HARD PHYSICS — bounding-box collision check using the
+    //       rabbit's body half-extents. Fires a FATAL collision
+    //       callback (game ends, player wins) if the rabbit's body
+    //       overlaps an uncleared threat. The X-clamp + smart hop
+    //       scheduling are designed to keep this from firing — but
+    //       if the AI ever fails (e.g. all 3 lanes blocked, or MEGA
+    //       on cooldown when a building hits) it surfaces here.
     const myX = this.group.position.x;
-    const proposed = speed * delta;
-    let safeAdvance = proposed;
+    const proposedAdvance = speed * delta;
+    const proposedDistance = this.distance + proposedAdvance;
     for (const t of threats) {
-      // We only care about threats whose body the rabbit could enter
-      // this frame (leading edge currently <= proposed advance).
-      const leadingEdge = t.dist - t.len / 2;
-      if (leadingEdge > proposed + 0.3) continue;       // too far ahead
-      if (t.dist + t.len / 2 < -0.3) continue;          // already fully past
-      if (this._canClear(t, this._hopY, myX)) continue; // rabbit will fly over / threads arch
-      // Blocked. Clamp to just before the leading edge (or 0 if past).
-      const stopAt = Math.max(0, leadingEdge - 0.2);
-      if (stopAt < safeAdvance) safeAdvance = stopAt;
-      // Mark resolved so the speed-cut penalty doesn't double-fire.
-      if (!this._resolvedThreats.has(t.obj)) {
-        this._resolvedThreats.add(t.obj);
-        if (this._penaltyT <= 0) this._penaltyT = JANA_BUNNY.COLLISION_PENALTY_SEC;
+      // Test whether the rabbit's body box would overlap this threat
+      // after the advance. Inflate threat's halves by rabbit body
+      // half-extents.
+      const bodyHalfL = JANA_BUNNY.BODY_HALF_L;
+      const bodyHalfW = JANA_BUNNY.BODY_HALF_W;
+      const halfL = t.len / 2 + bodyHalfL;
+      // Threat's distance after rabbit advances:
+      const dAfter = t.dist - proposedAdvance;
+      if (dAfter > halfL || dAfter < -halfL) continue;            // out of Z band
+      // Inflate lateral by body width.
+      if (t.kind === 'building') {
+        // Building special: pillars are everywhere except the central
+        // arch. If we're inside the building's Z band:
+        const insideArchX = (myX - bodyHalfW >= -t.archHalfW + 0.1) &&
+                            (myX + bodyHalfW <=  t.archHalfW - 0.1);
+        const insideArchY = (this._hopY >= t.archYMin + 0.3) &&
+                            (this._hopY <= t.archYMax - 0.3);
+        if (insideArchX && insideArchY) continue;                  // threading the arch — safe
+        if (onCollide && !this._resolvedThreats.has(t.obj)) {
+          this._resolvedThreats.add(t.obj);
+          this._fatalHit(onCollide, t);
+          return;
+        }
+        continue;
       }
-      // The pillar/wall might be wider than its leading edge alone —
-      // keep scanning others in case they clamp tighter.
+      const halfW = t.width / 2 + bodyHalfW;
+      if (Math.abs(t.x - myX) > halfW) continue;                   // lateral miss
+      // Vertical clearance for ground/player. 'wall' is never clear.
+      let cleared = false;
+      if (t.kind === 'ground') cleared = (this._hopY >= t.height - 0.1);
+      else if (t.kind === 'player') cleared = (this._hopY >= t.height + 0.2);
+      else cleared = false;
+      if (cleared) continue;
+      if (onCollide && !this._resolvedThreats.has(t.obj)) {
+        this._resolvedThreats.add(t.obj);
+        this._fatalHit(onCollide, t);
+        return;
+      }
     }
-    this.distance += safeAdvance;
+    // No fatal hit — advance.
+    this.distance = proposedDistance;
 
     // ── 7. Coin pickup
     this._scoopCoins(collectibles, playerDistance);
@@ -402,28 +436,24 @@ export class Rabbit {
    * threat's leading edge.
    */
   _canClear(t, hopY, myX) {
+    const bodyHalfW = JANA_BUNNY.BODY_HALF_W;
     if (t.kind === 'building') {
-      // Threading the centre arch: must be in centre lane laterally
-      // AND between archYMin..archYMax vertically (with margins).
-      const insideArchX = Math.abs(myX) <= (t.archHalfW - 0.15);
+      // Threading the centre arch: the rabbit's BODY (not just centre
+      // point) must fit through the opening laterally + vertically.
+      const insideArchX = (myX - bodyHalfW >= -t.archHalfW + 0.1) &&
+                          (myX + bodyHalfW <=  t.archHalfW - 0.1);
       const insideArchY = (hopY >= t.archYMin + 0.3) &&
                           (hopY <= t.archYMax - 0.3);
       return insideArchX && insideArchY;
     }
-    // Lateral clearance — outside threat's X footprint = safe.
-    const halfW = t.width / 2 + 0.4;
+    // Lateral clearance — outside threat's footprint (inflated by
+    // rabbit body half-width) = safe.
+    const halfW = t.width / 2 + bodyHalfW;
     if (Math.abs(t.x - myX) > halfW) return true;
-    if (t.kind === 'wall') {
-      // Can't be cleared by jumping (too tall); only laneswerve out.
-      return false;
-    }
-    if (t.kind === 'player') {
-      // Can be cleared by jumping over OR by being in a different lane.
-      // Player's body is short (~1.6m); HIGH hop (3.5m) clears.
-      return hopY >= t.height + 0.2;
-    }
+    if (t.kind === 'wall') return false;            // tall scenery — must swerve
+    if (t.kind === 'player') return hopY >= t.height + 0.2;
     // 'ground' — cleared if hop arc puts us above the top.
-    return hopY >= t.height - 0.2;
+    return hopY >= t.height - 0.1;
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -551,36 +581,59 @@ export class Rabbit {
   // Hop scheduling
   // ─────────────────────────────────────────────────────────────
 
+  /**
+   * Pick the next hop's peak height. Only TWO modes:
+   *   • SMALL — variable: HOP_PEAK_LOW (running) or HOP_PEAK_OBSTACLE
+   *             (about to clear a low car/rock in this lane).
+   *   • MEGA  — used EXCLUSIVELY when a building's leading edge is
+   *             within roughly half a mega-arc. Subject to
+   *             MEGA_COOLDOWN_SEC. After firing, locks out further
+   *             MEGAs for that cooldown window.
+   * If a building approaches and MEGA is on cooldown, the rabbit
+   * does its best with SMALL — and will collide on the building if
+   * lane-swerve to centre alone can't save it. That's the rabbit's
+   * loss condition, by design.
+   */
   _startHop(threats, speed) {
-    // Inspect threats in current target lane within HIGH/MEGA hop range
-    // and pick the appropriate peak.
-    const highRange = hopRange(JANA_BUNNY.HOP_PEAK_HIGH, JANA_BUNNY.HOP_GRAVITY, speed);
-    const megaRange = hopRange(JANA_BUNNY.HOP_PEAK_MEGA, JANA_BUNNY.HOP_GRAVITY, speed);
+    const obstacleRange = hopRange(JANA_BUNNY.HOP_PEAK_OBSTACLE, JANA_BUNNY.HOP_GRAVITY, speed);
+    const megaRange     = hopRange(JANA_BUNNY.HOP_PEAK_MEGA, JANA_BUNNY.HOP_GRAVITY, speed);
     let peak = JANA_BUNNY.HOP_PEAK_LOW;
-    let nearestGroundDist = Infinity;
+    let nearestObstacleDist = Infinity;
     let buildingAhead = null;
     for (const t of threats) {
       if (t.dist <= 0) continue;
       if (t.kind === 'building') {
-        // Trigger MEGA when the rabbit is ~half a mega-hop away, so the
-        // arc peak lands at the building's centre.
         const leading = t.dist - t.len / 2;
         if (leading <= megaRange * 0.55) buildingAhead = t;
       } else if (t.kind === 'ground' && t.lane === this._targetLane) {
-        if (t.dist < nearestGroundDist) nearestGroundDist = t.dist;
+        if (t.dist < nearestObstacleDist) nearestObstacleDist = t.dist;
       }
-      // 'wall' is handled by lane swerve; the rabbit never tries to
-      // hop a tall tree/lamp.
     }
-    if (buildingAhead) {
+    if (buildingAhead && this._megaCooldownT <= 0) {
+      // MEGA available — fire it. Cooldown starts now.
       peak = JANA_BUNNY.HOP_PEAK_MEGA;
-    } else if (nearestGroundDist < highRange) {
-      peak = JANA_BUNNY.HOP_PEAK_HIGH;
+      this._megaCooldownT = JANA_BUNNY.MEGA_COOLDOWN_SEC;
+    } else if (nearestObstacleDist < obstacleRange) {
+      // SMALL.clear — taller running hop to step over a low car/rock.
+      peak = JANA_BUNNY.HOP_PEAK_OBSTACLE;
+    } else {
+      // SMALL.run — default fast bunny-hop gait.
+      peak = JANA_BUNNY.HOP_PEAK_LOW;
     }
     this._hopVel = Math.sqrt(2 * JANA_BUNNY.HOP_GRAVITY * peak);
     this._hopY = 0.001;
     this._inHop = true;
     this._lastPeak = peak;
+  }
+
+  /**
+   * Mark the rabbit as dead and notify the host. The host (game.js)
+   * is expected to transition to a "player wins" state.
+   */
+  _fatalHit(callback, threat) {
+    if (this._dead) return;
+    this._dead = true;
+    callback(threat ? threat.kind : 'unknown');
   }
 
   // ─────────────────────────────────────────────────────────────

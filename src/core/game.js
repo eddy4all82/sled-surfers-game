@@ -974,6 +974,16 @@ export class Game {
   //     gameover, won). CSS .game-active class gates visibility.
   //   • While playing, label flips between JUMP (on ground) and PARA
   //     (airborne) to match the active behavior.
+  // Jana Bunny — fired by Rabbit.update when its body collides with
+  // any obstacle/scenery/building (the AI's planning failed). The
+  // rabbit "loses" → the player WINS.
+  _onRabbitCollision(kind) {
+    if (this.state !== 'playing') return;
+    // Trigger the standard win path. The win screen + finish-line UI
+    // takes over; the rabbit's death-cam variant comes in Phase 3.
+    this._win();
+  }
+
   // Jana Bunny — player vs rabbit physical collision. Fires only when
   // the player catches up to the rabbit at ground level: if their
   // bodies overlap in lane + Z, the player crashes (this._die fires
@@ -5731,6 +5741,11 @@ export class Game {
         collectibles:   this.collectibles,
         courseLength:   this.map ? this.map.courseLength : 0,
         laneWidth:      GAME_CONFIG.LANE_WIDTH,
+        // FATAL collision callback: when the rabbit's body would
+        // overlap an obstacle (its AI failed), the rabbit "loses"
+        // and the PLAYER WINS. Mirrors the player's own collision
+        // → death contract.
+        onRabbitCollide: (kind) => this._onRabbitCollision(kind),
       });
       // Player-vs-rabbit kill check: if the player runs into the rabbit
       // (same Z band, lateral overlap, both at ground/low Y), the

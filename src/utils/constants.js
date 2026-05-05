@@ -85,19 +85,24 @@ export const JANA_BUNNY = {
   // if the player's live speed isn't available.
   RABBIT_SPEED_MULT:     0.98,
   RABBIT_SPEED:           28,    // Fallback world-units/sec (only if env.playerSpeed is missing)
-  // Hop cadence + arc heights.
-  // The rabbit is ALWAYS in a hop — the moment one finishes, the next
-  // starts. Three peak modes:
-  //   • LOW   — quick running gait. Rapid small bunny-hops while
-  //             nothing is in the way; this is the natural locomotion.
-  //   • HIGH  — clears cars / rocks / mid-height hazards.
-  //   • MEGA  — reserved for tall openings (e.g. mid-rise bridge holes
-  //             several meters up). Not yet used by Phase 2 logic but
-  //             wired for Phase 3.
-  HOP_PEAK_LOW:          0.55,   // small running-hop arc (~0.55m peak)
-  HOP_PEAK_HIGH:         3.5,    // for clearing ground hazards
-  HOP_PEAK_MEGA:         5.5,    // future use: high openings
+  // Hop modes — there are only two kinds the rabbit ever does:
+  //   • SMALL — the natural running gait. Variable peak between
+  //             RUN (0.4m, when nothing's in the way) and CLEAR (1.2m,
+  //             enough to land on top of / hop over a 1m car or rock).
+  //             No cooldown.
+  //   • MEGA  — tall jump used EXCLUSIVELY for threading mid-rise
+  //             building arches. 5-second cooldown between uses.
+  HOP_PEAK_LOW:          0.4,    // SMALL.run     — running gait (no obstacle near)
+  HOP_PEAK_OBSTACLE:     1.2,    // SMALL.clear   — clearance hop over cars/rocks
+  HOP_PEAK_MEGA:         5.5,    // MEGA          — building arch threading
+  HOP_PEAK_HIGH:         1.2,    // legacy alias for HOP_PEAK_OBSTACLE (kept for safety)
   HOP_GRAVITY:           34,     // Custom gravity for the rabbit's arc — higher = snappier short hops
+  MEGA_COOLDOWN_SEC:     5.0,    // Seconds the MEGA jump is unavailable after firing
+  // Rabbit body half-extents — used for "the rabbit has mass" checks.
+  // The AI inflates obstacle hit-boxes by these to plan jump/swerve
+  // placement so the body never touches anything.
+  BODY_HALF_W:           0.55,   // half-width along X
+  BODY_HALF_L:           0.7,    // half-length along Z
   // Look-ahead window: the rabbit scans this many world-units ahead
   // for upcoming obstacles each frame to plan its next hop / lane.
   LOOKAHEAD_M:           18,
