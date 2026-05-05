@@ -100,9 +100,10 @@ export const JANA_BUNNY = {
   MEGA_COOLDOWN_SEC:     5.0,    // Seconds the MEGA jump is unavailable after firing
   // Rabbit body half-extents — used for "the rabbit has mass" checks.
   // The AI inflates obstacle hit-boxes by these to plan jump/swerve
-  // placement so the body never touches anything.
-  BODY_HALF_W:           0.55,   // half-width along X
-  BODY_HALF_L:           0.7,    // half-length along Z
+  // placement so the body never touches anything. Scaled with the
+  // visual mesh (currently 60% of the original size).
+  BODY_HALF_W:           0.33,   // half-width along X (was 0.55)
+  BODY_HALF_L:           0.42,   // half-length along Z (was 0.7)
   // Look-ahead window: the rabbit scans this many world-units ahead
   // for upcoming obstacles each frame to plan its next hop / lane.
   LOOKAHEAD_M:           18,
