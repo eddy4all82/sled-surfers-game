@@ -858,6 +858,14 @@ export class Game {
       'click', startGesture(() => this.restart({ newSeed: true })));
     if (winReplay) winReplay.addEventListener(
       'click', startGesture(() => this.restart({ newSeed: false })));
+    // MAIN MENU — return to the start screen (mode selector). Available
+    // from both the game-over and win panels in either game mode.
+    const mainMenuBtn = document.getElementById('main-menu-btn');
+    const winMainMenuBtn = document.getElementById('win-main-menu-btn');
+    if (mainMenuBtn) mainMenuBtn.addEventListener(
+      'click', () => this._returnToMainMenu());
+    if (winMainMenuBtn) winMainMenuBtn.addEventListener(
+      'click', () => this._returnToMainMenu());
 
     // Initial milestone tick on the progress bar
     this._populateProgressMilestones();
@@ -5406,6 +5414,33 @@ export class Game {
     }, Math.max(0, ms));
     // this.sounds.stop('yahoo');
     // this.sounds.stop('parachute');
+  }
+
+  // Return to the start screen (mode selector). Used by the MAIN MENU
+  // button on both the game-over and win panels. Cleans up active
+  // round state without rolling a new course; the next PLAY click can
+  // pick a different mode.
+  _returnToMainMenu() {
+    this._cancelCountdown();
+    this._stopBgMusic();
+    if (this.sounds) this.sounds.stopAllSources();
+    if (this.rabbit) { this.rabbit.dispose(); this.rabbit = null; }
+    // Hide the round UI.
+    if (this.gameOverScreen) this.gameOverScreen.style.display = 'none';
+    const winScreen = document.getElementById('win-screen');
+    if (winScreen) winScreen.style.display = 'none';
+    if (this.hud) this.hud.style.display = 'none';
+    if (this.progressEl) this.progressEl.style.display = 'none';
+    if (this.airTimeEl) this.airTimeEl.classList.remove('active');
+    if (this.speedLinesEl) this.speedLinesEl.classList.remove('active');
+    // Show the start screen again.
+    if (this.startScreen) {
+      this.startScreen.style.display = 'flex';
+      // Force reflow before re-fading in so the transition runs.
+      void this.startScreen.offsetWidth;
+      this.startScreen.style.opacity = '1';
+    }
+    this.state = 'ready';
   }
 
   restart(opts = {}) {

@@ -715,6 +715,24 @@
       cursor: pointer;
       pointer-events: all;
     }
+    /* Secondary action — used by MAIN MENU on game-over and win screens.
+       Visually quieter than the primary orange CTA so PLAY AGAIN stays
+       the dominant choice. */
+    .secondary-btn {
+      font-family: 'Arial Black', sans-serif;
+      font-size: 16px;
+      padding: 10px 28px;
+      background: rgba(255, 255, 255, 0.15);
+      color: #ffffff;
+      border: 2px solid rgba(255, 255, 255, 0.55);
+      border-radius: 50px;
+      cursor: pointer;
+      pointer-events: all;
+      margin-top: 10px;
+      letter-spacing: 1px;
+      transition: background 0.2s, border-color 0.2s;
+    }
+    .secondary-btn:hover { background: rgba(255, 255, 255, 0.28); border-color: #ffffff; }
 
     /* Loading */
     #loading {
@@ -1275,6 +1293,7 @@
     <h2 id="game-over-title">Game Over!</h2>
     <div id="final-score"></div>
     <button id="restart-btn">PLAY AGAIN</button>
+    <button id="main-menu-btn" class="secondary-btn">MAIN MENU</button>
     <button class="open-settings settings-btn">⚙ SETTINGS</button>
   </div>
 
@@ -1286,6 +1305,7 @@
     <div class="win-buttons">
       <button id="win-new-btn">PLAY AGAIN</button>
       <button id="win-replay-btn">REPLAY MAP</button>
+      <button id="win-main-menu-btn" class="secondary-btn">MAIN MENU</button>
       <button class="open-settings settings-btn">⚙ SETTINGS</button>
     </div>
   </div>
