@@ -1,59 +1,54 @@
 /**
  * Rabbit — Jana Bunny mode AI racer.
  *
- * Phase 2: full AI.
- *   • Continuous parabolic hop. The moment one hop ends, the next
- *     starts — the rabbit is never sliding/walking.
- *   • Look-ahead obstacle scan in the current lane: cars/rocks within
- *     LOOKAHEAD_M trigger a HIGH hop on the next bounce so the rabbit
- *     clears them; otherwise a LOW hop (default cadence + bridge-hole
- *     friendly).
- *   • Lane swerve when the current lane has more upcoming blockers
- *     than another lane within SWERVE_LOOKAHEAD_M.
- *   • Coins the rabbit passes (same lane, within COIN_PICKUP_DISTANCE)
- *     are collected — flag-shared with the player so they vanish for
- *     both racers.
- *   • If the AI's hop fails to clear an obstacle (rabbit's Y at the
- *     obstacle's distance < its top minus margin AND lanes match), a
- *     COLLISION_PENALTY_SEC speed cut is applied. Rabbit doesn't die.
+ * Phase 2.1 (revision): cute mesh, dynamic speed tracking, true running-
+ * gait hop cadence.
  *
- * The rabbit's mesh sits in world space; its world-Z is computed each
- * frame as `-(rabbit.distance - playerDistance)` so it visibly stays
- * ahead/behind based on real progress.
+ * Locomotion model
+ * ----------------
+ * The rabbit is ALWAYS hopping. Three peak modes pick the arc:
+ *   • LOW  (~0.55m) — rapid small bunny-hops, the natural running gait.
+ *                     The peak is intentionally short so the cadence is
+ *                     fast (~0.4 s per arc) — looks like a real running
+ *                     rabbit, not a single big jump.
+ *   • HIGH (~3.5m)  — when an obstacle is detected ahead in this lane,
+ *                     the next hop arcs over the top of cars/rocks.
+ *   • MEGA (~5.5m)  — reserved for tall openings (Phase 3).
  *
- * Sprint Run never instantiates this class — kept entirely off the hot
- * path until gameMode === 'jana_bunny'.
+ * Forward speed = playerSpeed × RABBIT_SPEED_MULT. Tracking the player
+ * keeps the race close — a clean run barely beats the rabbit, a sloppy
+ * run loses. Falls back to JANA_BUNNY.RABBIT_SPEED if no live player
+ * speed is provided.
+ *
+ * Coin pickup, lane swerve, and collision penalty are unchanged from
+ * the previous revision (see method docstrings).
  */
 import * as THREE from 'three';
 import { JANA_BUNNY } from '../utils/constants.js';
 
 export class Rabbit {
   constructor() {
-    this.group = null;       // root Object3D added to the scene
-    this.distance = 0;       // world-units traveled along the course
-    this.lane = -1;          // current lane index in {-1, 0, +1}
-    this._targetLane = -1;   // lane the AI is steering toward
+    this.group = null;
+    this.distance = 0;
+    this.lane = -1;
+    this._targetLane = -1;
     this._scene = null;
-    this._laneWidth = 3;     // matches GAME_CONFIG.LANE_WIDTH
+    this._laneWidth = 3;
 
-    // Hop physics state
     this._hopY = 0;
     this._hopVel = 0;
     this._inHop = false;
-    this._nextPeak = JANA_BUNNY.HOP_PEAK_LOW;
+    this._hopCount = 0;            // how many hops since spawn — used for ear flap
+    this._lastPeak = JANA_BUNNY.HOP_PEAK_LOW;
 
-    // Collision penalty timer (seconds remaining).
     this._penaltyT = 0;
-
-    // Track which obstacles we've already resolved (collided or
-    // passed under) so we don't double-count penalties on the same
-    // obstacle across frames.
     this._resolvedObs = new WeakSet();
+
+    // Cached references to animated mesh parts (set in init).
+    this._earL = null;
+    this._earR = null;
   }
 
-  /**
-   * Build the mesh and add it at the start line, in the given lane.
-   */
   init(scene, { lane = -1, laneWidth = 3 } = {}) {
     this._scene = scene;
     this.lane = lane;
@@ -64,107 +59,212 @@ export class Rabbit {
     this._hopVel = 0;
     this._inHop = false;
     this._penaltyT = 0;
+    this._hopCount = 0;
 
     const root = new THREE.Group();
     root.userData.kind = 'rabbit';
 
-    // Body — squashed sphere, pearl white.
-    const whiteMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.7 });
-    const body = new THREE.Mesh(new THREE.SphereGeometry(0.55, 14, 12), whiteMat);
-    body.scale.set(1.0, 0.85, 1.4);
-    body.position.y = 0.7;
+    // Materials
+    const furMat   = new THREE.MeshStandardMaterial({ color: 0xfafafa, roughness: 0.8 });
+    const bellyMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.85 });
+    const pinkMat  = new THREE.MeshStandardMaterial({ color: 0xff9fb5, roughness: 0.7 });
+    const noseMat  = new THREE.MeshStandardMaterial({ color: 0xff6b8a, roughness: 0.6 });
+    const eyeMat   = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.3 });
+    const eyeWhiteMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.4 });
+    const toothMat = new THREE.MeshStandardMaterial({ color: 0xfff5e0, roughness: 0.5 });
+
+    // ── Body — large rounded ovoid sitting back on the haunches.
+    const bodyGeo = new THREE.SphereGeometry(0.65, 18, 14);
+    const body = new THREE.Mesh(bodyGeo, furMat);
+    body.scale.set(1.0, 0.95, 1.4);
+    body.position.set(0, 0.7, -0.05);
     body.castShadow = true;
     root.add(body);
 
-    // Head — sphere, slightly forward & up.
-    const head = new THREE.Mesh(new THREE.SphereGeometry(0.36, 14, 12), whiteMat);
+    // Belly — slightly lighter front patch.
+    const belly = new THREE.Mesh(new THREE.SphereGeometry(0.45, 14, 10), bellyMat);
+    belly.scale.set(0.9, 0.7, 1.0);
+    belly.position.set(0, 0.55, 0.25);
+    root.add(belly);
+
+    // ── Head — chubby rounded sphere mounted forward + up.
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.42, 18, 14), furMat);
     head.position.set(0, 1.05, 0.55);
     head.castShadow = true;
     root.add(head);
 
-    // Ears — two tall narrow cylinders.
-    const pinkMat = new THREE.MeshStandardMaterial({ color: 0xffb3c1, roughness: 0.8 });
-    const earGeo = new THREE.CylinderGeometry(0.07, 0.05, 0.55, 8);
-    const earL = new THREE.Mesh(earGeo, whiteMat);
-    earL.position.set(-0.15, 1.45, 0.45);
-    earL.rotation.z = 0.15;
+    // Cheeks — slightly puffed out for a cute silhouette.
+    const cheekGeo = new THREE.SphereGeometry(0.16, 10, 8);
+    const cheekL = new THREE.Mesh(cheekGeo, furMat);
+    cheekL.position.set(-0.22, 0.95, 0.78);
+    root.add(cheekL);
+    const cheekR = new THREE.Mesh(cheekGeo, furMat);
+    cheekR.position.set(0.22, 0.95, 0.78);
+    root.add(cheekR);
+
+    // ── Ears — long upright ovals with pink interior. Tilted slightly
+    //         outward so they read as ears, not antennae.
+    const earGeo  = new THREE.CylinderGeometry(0.09, 0.06, 0.85, 10);
+    const earInGeo = new THREE.CylinderGeometry(0.05, 0.025, 0.72, 10);
+    const earL = new THREE.Group();
+    earL.position.set(-0.18, 1.5, 0.55);
+    earL.rotation.z = 0.18;
+    const earLOuter = new THREE.Mesh(earGeo, furMat);
+    earLOuter.position.y = 0.42;
+    earL.add(earLOuter);
+    const earLInner = new THREE.Mesh(earInGeo, pinkMat);
+    earLInner.position.set(0, 0.42, 0.05);
+    earL.add(earLInner);
     root.add(earL);
-    const earR = new THREE.Mesh(earGeo, whiteMat);
-    earR.position.set(0.15, 1.45, 0.45);
-    earR.rotation.z = -0.15;
+
+    const earR = new THREE.Group();
+    earR.position.set(0.18, 1.5, 0.55);
+    earR.rotation.z = -0.18;
+    const earROuter = new THREE.Mesh(earGeo, furMat);
+    earROuter.position.y = 0.42;
+    earR.add(earROuter);
+    const earRInner = new THREE.Mesh(earInGeo, pinkMat);
+    earRInner.position.set(0, 0.42, 0.05);
+    earR.add(earRInner);
     root.add(earR);
-    const innerEarGeo = new THREE.CylinderGeometry(0.04, 0.025, 0.45, 8);
-    const innerL = new THREE.Mesh(innerEarGeo, pinkMat);
-    innerL.position.set(-0.15, 1.45, 0.5);
-    innerL.rotation.z = 0.15;
-    root.add(innerL);
-    const innerR = new THREE.Mesh(innerEarGeo, pinkMat);
-    innerR.position.set(0.15, 1.45, 0.5);
-    innerR.rotation.z = -0.15;
-    root.add(innerR);
 
-    // Eyes
-    const eyeMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.4 });
-    const eyeGeo = new THREE.SphereGeometry(0.05, 8, 6);
-    const eyeL = new THREE.Mesh(eyeGeo, eyeMat);
-    eyeL.position.set(-0.13, 1.12, 0.85);
+    this._earL = earL;
+    this._earR = earR;
+
+    // ── Eyes — white sclera + black pupil for that big-anime-eye look.
+    const scleraGeo = new THREE.SphereGeometry(0.085, 12, 10);
+    const pupilGeo  = new THREE.SphereGeometry(0.06, 10, 8);
+    const eyeLW = new THREE.Mesh(scleraGeo, eyeWhiteMat);
+    eyeLW.position.set(-0.16, 1.12, 0.92);
+    root.add(eyeLW);
+    const eyeRW = new THREE.Mesh(scleraGeo, eyeWhiteMat);
+    eyeRW.position.set(0.16, 1.12, 0.92);
+    root.add(eyeRW);
+    const eyeL = new THREE.Mesh(pupilGeo, eyeMat);
+    eyeL.position.set(-0.16, 1.10, 0.96);
     root.add(eyeL);
-    const eyeR = new THREE.Mesh(eyeGeo, eyeMat);
-    eyeR.position.set(0.13, 1.12, 0.85);
+    const eyeR = new THREE.Mesh(pupilGeo, eyeMat);
+    eyeR.position.set(0.16, 1.10, 0.96);
     root.add(eyeR);
+    // Tiny shine highlights
+    const shineGeo = new THREE.SphereGeometry(0.018, 8, 6);
+    const shineL = new THREE.Mesh(shineGeo, eyeWhiteMat);
+    shineL.position.set(-0.14, 1.14, 1.01);
+    root.add(shineL);
+    const shineR = new THREE.Mesh(shineGeo, eyeWhiteMat);
+    shineR.position.set(0.18, 1.14, 1.01);
+    root.add(shineR);
 
-    // Tail
-    const tail = new THREE.Mesh(new THREE.SphereGeometry(0.16, 10, 8), whiteMat);
-    tail.position.set(0, 0.7, -0.65);
+    // ── Nose (pink heart-ish triangle) and mouth.
+    const nose = new THREE.Mesh(new THREE.SphereGeometry(0.06, 8, 6), noseMat);
+    nose.scale.set(1.2, 0.85, 1.0);
+    nose.position.set(0, 0.95, 1.0);
+    root.add(nose);
+    // Two tiny buck teeth.
+    const toothGeo = new THREE.BoxGeometry(0.05, 0.09, 0.04);
+    const toothL = new THREE.Mesh(toothGeo, toothMat);
+    toothL.position.set(-0.04, 0.83, 0.96);
+    root.add(toothL);
+    const toothR = new THREE.Mesh(toothGeo, toothMat);
+    toothR.position.set(0.04, 0.83, 0.96);
+    root.add(toothR);
+
+    // ── Front paws — visible underneath the chest, small ovals.
+    const pawGeo = new THREE.SphereGeometry(0.14, 10, 8);
+    const pawL = new THREE.Mesh(pawGeo, furMat);
+    pawL.scale.set(0.9, 0.8, 1.5);
+    pawL.position.set(-0.18, 0.25, 0.55);
+    root.add(pawL);
+    const pawR = new THREE.Mesh(pawGeo, furMat);
+    pawR.scale.set(0.9, 0.8, 1.5);
+    pawR.position.set(0.18, 0.25, 0.55);
+    root.add(pawR);
+
+    // ── Back legs — bigger ovals tucked at the sides ("haunches").
+    const haunchGeo = new THREE.SphereGeometry(0.32, 12, 10);
+    const haunchL = new THREE.Mesh(haunchGeo, furMat);
+    haunchL.scale.set(0.7, 1.0, 1.4);
+    haunchL.position.set(-0.42, 0.45, -0.25);
+    root.add(haunchL);
+    const haunchR = new THREE.Mesh(haunchGeo, furMat);
+    haunchR.scale.set(0.7, 1.0, 1.4);
+    haunchR.position.set(0.42, 0.45, -0.25);
+    root.add(haunchR);
+
+    // Big back feet poking forward (bunny signature)
+    const footGeo = new THREE.SphereGeometry(0.18, 10, 8);
+    const footL = new THREE.Mesh(footGeo, furMat);
+    footL.scale.set(1.0, 0.7, 2.0);
+    footL.position.set(-0.32, 0.18, 0.05);
+    root.add(footL);
+    const footR = new THREE.Mesh(footGeo, furMat);
+    footR.scale.set(1.0, 0.7, 2.0);
+    footR.position.set(0.32, 0.18, 0.05);
+    root.add(footR);
+
+    // ── Cotton tail
+    const tail = new THREE.Mesh(new THREE.SphereGeometry(0.22, 12, 10), bellyMat);
+    tail.position.set(0, 0.85, -0.85);
     root.add(tail);
 
-    root.position.set(lane * laneWidth, 0, 0);
+    // Whiskers — six thin line segments using BufferGeometry. Cheap.
+    const whiskerMat = new THREE.LineBasicMaterial({ color: 0xcccccc });
+    const mkWhisker = (x1, y1, z1, x2, y2, z2) => {
+      const g = new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(x1, y1, z1),
+        new THREE.Vector3(x2, y2, z2),
+      ]);
+      return new THREE.Line(g, whiskerMat);
+    };
+    root.add(mkWhisker(-0.06, 0.92, 1.00, -0.40, 0.98, 1.02));
+    root.add(mkWhisker(-0.06, 0.88, 1.00, -0.40, 0.85, 1.02));
+    root.add(mkWhisker(-0.06, 0.84, 1.00, -0.36, 0.78, 1.02));
+    root.add(mkWhisker( 0.06, 0.92, 1.00,  0.40, 0.98, 1.02));
+    root.add(mkWhisker( 0.06, 0.88, 1.00,  0.40, 0.85, 1.02));
+    root.add(mkWhisker( 0.06, 0.84, 1.00,  0.36, 0.78, 1.02));
 
+    root.position.set(lane * laneWidth, 0, 0);
     scene.add(root);
     this.group = root;
     return this;
   }
 
   /**
-   * Per-frame update.
-   *
-   * env: {
-   *   playerDistance:   number,
-   *   obstacles:        Object3D[]   // cars / rocks (jumpable)
-   *   collectibles:     Object3D[]   // coins
-   *   courseLength:     number,
-   *   laneWidth:        number,      // optional; falls back to instance _laneWidth
-   * }
+   * env: { playerDistance, playerSpeed, obstacles, collectibles, courseLength, laneWidth }
    */
   update(delta, env = {}) {
     if (!this.group) return;
     const playerDistance = env.playerDistance || 0;
-    const obstacles = env.obstacles || [];
-    const collectibles = env.collectibles || [];
-    const laneWidth = env.laneWidth || this._laneWidth;
+    const playerSpeed    = (typeof env.playerSpeed === 'number' && env.playerSpeed > 0)
+      ? env.playerSpeed : JANA_BUNNY.RABBIT_SPEED;
+    const obstacles      = env.obstacles || [];
+    const collectibles   = env.collectibles || [];
+    const laneWidth      = env.laneWidth || this._laneWidth;
 
     // ── 1. Penalty timer
     if (this._penaltyT > 0) this._penaltyT = Math.max(0, this._penaltyT - delta);
 
-    // ── 2. Forward speed (cut while in penalty)
-    const speedMul = this._penaltyT > 0 ? JANA_BUNNY.COLLISION_SPEED_MULT : 1.0;
-    this.distance += JANA_BUNNY.RABBIT_SPEED * speedMul * delta;
+    // ── 2. Forward speed: track player so race stays close. Apply
+    //       penalty multiplier if currently in a collision recovery.
+    const baseSpeed = playerSpeed * JANA_BUNNY.RABBIT_SPEED_MULT;
+    const speedMul  = this._penaltyT > 0 ? JANA_BUNNY.COLLISION_SPEED_MULT : 1.0;
+    const speed     = baseSpeed * speedMul;
+    this.distance  += speed * delta;
 
-    // ── 3. Lane planning — pick a target lane based on what's ahead
+    // ── 3. Lane planning
     this._planLane(obstacles, playerDistance);
 
-    // ── 4. Lane X smoothly interpolates to target
+    // ── 4. Lane X interpolation
     const targetX = this._targetLane * laneWidth;
     const currentX = this.group.position.x;
     const k = JANA_BUNNY.LANE_SWITCH_RATE;
     this.group.position.x = currentX + (targetX - currentX) * Math.min(1, k * delta);
-    // Once close enough, snap discrete lane index.
     if (Math.abs(this.group.position.x - targetX) < 0.05) {
       this.lane = this._targetLane;
       this.group.position.x = targetX;
     }
 
-    // ── 5. Hop physics (parabolic arc)
+    // ── 5. Hop arc
     if (!this._inHop) this._startHop(obstacles, playerDistance);
     this._hopVel -= JANA_BUNNY.HOP_GRAVITY * delta;
     this._hopY   += this._hopVel * delta;
@@ -172,57 +272,50 @@ export class Rabbit {
       this._hopY = 0;
       this._hopVel = 0;
       this._inHop = false;
-      // The next frame schedules a fresh hop (no walking gap — race feel).
     }
 
-    // ── 6. Coin pickup — same source-of-truth flag the player sets,
-    //       so a coin the rabbit grabs disappears for both racers.
-    this._scoopCoins(collectibles, playerDistance, laneWidth);
+    // ── 6. Coin pickup (shared collected flag with player)
+    this._scoopCoins(collectibles, playerDistance);
 
-    // ── 7. Collision check — penalty if we cross an obstacle's distance
-    //       in the same lane while the hop hasn't lifted us above it.
-    this._checkCollisions(obstacles, playerDistance, laneWidth);
+    // ── 7. Collision penalty check
+    this._checkCollisions(obstacles, playerDistance);
 
-    // ── 8. Render position. Z is relative to the player's progress so
-    //       the rabbit visibly stays ahead/behind based on real distance.
+    // ── 8. Render position
     this.group.position.y = this._hopY;
     this.group.position.z = -(this.distance - playerDistance);
 
-    // Pitch tilt: nose up while ascending, nose down while descending.
-    // Maps roughly +-15deg over the natural hop velocity range.
-    const tilt = Math.atan2(this._hopVel, JANA_BUNNY.RABBIT_SPEED * speedMul + 1) * 0.4;
+    // Pitch tilt — nose up rising, nose down falling.
+    const tilt = Math.atan2(this._hopVel, speed + 1) * 0.5;
     this.group.rotation.x = -tilt;
+
+    // Ear flap — counter-tilt the ears so they trail slightly behind
+    // the body's pitch, gives a sense of inertia. Cheap motion cue.
+    if (this._earL && this._earR) {
+      const earSwing = -tilt * 0.6;
+      this._earL.rotation.x = earSwing;
+      this._earR.rotation.x = earSwing;
+    }
   }
 
-  /**
-   * Schedule the next hop and decide its peak height. Looks at the
-   * very next obstacle in the current lane within the lookahead and
-   * picks HIGH to clear it, or LOW for the default arc.
-   */
   _startHop(obstacles, playerDistance) {
     let peak = JANA_BUNNY.HOP_PEAK_LOW;
-    const nextObs = this._nextObstacleInLane(obstacles, playerDistance, JANA_BUNNY.LOOKAHEAD_M, this._targetLane);
-    if (nextObs) peak = JANA_BUNNY.HOP_PEAK_HIGH;
-    // v = sqrt(2 g h) — initial vertical velocity to reach exactly `peak`
+    const next = this._nextObstacleInLane(obstacles, playerDistance, JANA_BUNNY.LOOKAHEAD_M, this._targetLane);
+    if (next) peak = JANA_BUNNY.HOP_PEAK_HIGH;
     this._hopVel = Math.sqrt(2 * JANA_BUNNY.HOP_GRAVITY * peak);
-    this._hopY = 0.001;     // nudge above ground so the loop knows we're airborne
+    this._hopY = 0.001;
     this._inHop = true;
-    this._nextPeak = peak;
+    this._lastPeak = peak;
+    this._hopCount++;
   }
 
-  /**
-   * If the current lane is blocked within SWERVE_LOOKAHEAD_M and a
-   * sibling lane is clear, switch target lane. Otherwise stay.
-   */
   _planLane(obstacles, playerDistance) {
-    const laneCounts = this._countBlockersByLane(obstacles, playerDistance, JANA_BUNNY.SWERVE_LOOKAHEAD_M);
-    const here = laneCounts[this._targetLane + 1] || 0;
-    if (here === 0) return; // happy with current lane
+    const counts = this._countBlockersByLane(obstacles, playerDistance, JANA_BUNNY.SWERVE_LOOKAHEAD_M);
+    const here = counts[this._targetLane + 1] || 0;
+    if (here === 0) return;
     let bestLane = this._targetLane;
     let bestCount = here;
     for (const tryLane of [-1, 0, 1]) {
-      const c = laneCounts[tryLane + 1] || 0;
-      // Prefer adjacent lanes (no skipping) — penalize 2-lane jumps.
+      const c = counts[tryLane + 1] || 0;
       const distancePenalty = Math.abs(tryLane - this._targetLane) > 1 ? 0.5 : 0;
       if (c + distancePenalty < bestCount) {
         bestLane = tryLane;
@@ -232,10 +325,6 @@ export class Rabbit {
     if (bestLane !== this._targetLane) this._targetLane = bestLane;
   }
 
-  /**
-   * Count obstacles ahead per lane within `windowM` world units.
-   * Returns array indexed by (lane+1).
-   */
   _countBlockersByLane(obstacles, playerDistance, windowM) {
     const counts = [0, 0, 0];
     for (const o of obstacles) {
@@ -250,9 +339,6 @@ export class Rabbit {
     return counts;
   }
 
-  /**
-   * Find the closest obstacle in `lane` within `windowM` ahead of the rabbit.
-   */
   _nextObstacleInLane(obstacles, playerDistance, windowM, lane) {
     let best = null;
     let bestAhead = Infinity;
@@ -268,13 +354,7 @@ export class Rabbit {
     return best;
   }
 
-  /**
-   * Sweep collectibles; coins within COIN_PICKUP_DISTANCE along the
-   * rabbit's path AND within COIN_PICKUP_LANE_DX laterally are picked
-   * up. The collected flag is the same one the player sets in
-   * game.js — so the coin disappears for everyone.
-   */
-  _scoopCoins(collectibles, playerDistance, laneWidth) {
+  _scoopCoins(collectibles, playerDistance) {
     const dx = JANA_BUNNY.COIN_PICKUP_LANE_DX;
     const dz = JANA_BUNNY.COIN_PICKUP_DISTANCE;
     const myX = this.group.position.x;
@@ -288,53 +368,35 @@ export class Rabbit {
     }
   }
 
-  /**
-   * Apply a collision penalty if the rabbit is currently passing
-   * through an obstacle's distance band while in the same lane and
-   * its hop Y is below the obstacle's top (with margin). Each
-   * obstacle is resolved at most once via the WeakSet.
-   */
-  _checkCollisions(obstacles, playerDistance, laneWidth) {
+  _checkCollisions(obstacles, playerDistance) {
     const myX = this.group.position.x;
     for (const o of obstacles) {
       if (!o.userData || this._resolvedObs.has(o)) continue;
       const obsDist = playerDistance + o.position.z;
-      const lateralDist = obsDist - this.distance;
-      // Only consider obstacles within a small band straddling the rabbit
+      const ahead = obsDist - this.distance;
       const halfL = (o.userData.length || 1.5) / 2 + 0.4;
-      if (lateralDist < -halfL || lateralDist > halfL) continue;
-      // Lateral X check
+      if (ahead < -halfL || ahead > halfL) continue;
       const halfW = (o.userData.width || 1.5) / 2 + 0.5;
       if (Math.abs((o.position.x ?? 0) - myX) > halfW) continue;
-      // Cleared on top? No collision.
       const top = (o.userData.height || 1.0);
       if (this._hopY >= top - 0.2) {
-        // Hop arc was high enough — mark resolved so we don't keep checking.
         this._resolvedObs.add(o);
         continue;
       }
-      // Otherwise: collision — apply penalty and mark resolved.
       this._resolvedObs.add(o);
-      if (this._penaltyT <= 0) {
-        this._penaltyT = JANA_BUNNY.COLLISION_PENALTY_SEC;
-      }
+      if (this._penaltyT <= 0) this._penaltyT = JANA_BUNNY.COLLISION_PENALTY_SEC;
     }
   }
 
-  /** Has the rabbit reached or crossed the finish line? */
   hasFinished(courseLength) {
     return courseLength > 0 && this.distance >= courseLength;
   }
 
-  /**
-   * Tear down: remove from scene, dispose geometry/material so the
-   * round restart doesn't leak GPU memory.
-   */
   dispose() {
     if (!this.group || !this._scene) return;
     this._scene.remove(this.group);
     this.group.traverse((o) => {
-      if (o.isMesh) {
+      if (o.isMesh || o.isLine) {
         if (o.geometry) o.geometry.dispose();
         if (o.material) {
           if (Array.isArray(o.material)) o.material.forEach((m) => m.dispose());

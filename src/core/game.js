@@ -5699,6 +5699,7 @@ export class Game {
     if (this.gameMode === 'jana_bunny' && this.rabbit && this.state === 'playing') {
       this.rabbit.update(delta, {
         playerDistance: this.distance,
+        playerSpeed:    this.speed,
         obstacles:      this.obstacles,
         collectibles:   this.collectibles,
         courseLength:   this.map ? this.map.courseLength : 0,

@@ -78,19 +78,26 @@ export const GAME_CONFIG = {
  * when gameMode === 'jana_bunny'. Sprint Run never reads from this.
  */
 export const JANA_BUNNY = {
-  // Forward speed targets ~95% of the player's average pace so a clean
-  // run barely beats the rabbit and a sloppy run loses. Adjust per
-  // difficulty later.
-  RABBIT_SPEED:           28,    // World units / second
-  // Hop cadence + arc heights. The rabbit is ALWAYS in a hop — the
-  // moment one finishes, the next starts. Two peak heights are picked
-  // based on what's coming up next: LOW threads through bridge holes
-  // and avoids going too high; HIGH clears cars and other low ground
-  // hazards.
-  HOP_INTERVAL:          0.55,   // Min seconds between hops (also ~the natural arc duration at default heights)
-  HOP_PEAK_LOW:          1.6,    // Default & for fitting through low-pass openings
-  HOP_PEAK_HIGH:         3.2,    // For clearing cars / mid-height hazards
-  HOP_GRAVITY:           28,     // Custom gravity for the rabbit's arc (independent of player physics)
+  // Forward speed tracks the player's CURRENT speed × this multiplier.
+  // 0.98 keeps the race close — rabbit slightly faster on the early
+  // ramp-up, slightly slower at top speed, so a clean run wins by a
+  // small margin and a sloppy run loses. Used as a fallback constant
+  // if the player's live speed isn't available.
+  RABBIT_SPEED_MULT:     0.98,
+  RABBIT_SPEED:           28,    // Fallback world-units/sec (only if env.playerSpeed is missing)
+  // Hop cadence + arc heights.
+  // The rabbit is ALWAYS in a hop — the moment one finishes, the next
+  // starts. Three peak modes:
+  //   • LOW   — quick running gait. Rapid small bunny-hops while
+  //             nothing is in the way; this is the natural locomotion.
+  //   • HIGH  — clears cars / rocks / mid-height hazards.
+  //   • MEGA  — reserved for tall openings (e.g. mid-rise bridge holes
+  //             several meters up). Not yet used by Phase 2 logic but
+  //             wired for Phase 3.
+  HOP_PEAK_LOW:          0.55,   // small running-hop arc (~0.55m peak)
+  HOP_PEAK_HIGH:         3.5,    // for clearing ground hazards
+  HOP_PEAK_MEGA:         5.5,    // future use: high openings
+  HOP_GRAVITY:           34,     // Custom gravity for the rabbit's arc — higher = snappier short hops
   // Look-ahead window: the rabbit scans this many world-units ahead
   // for upcoming obstacles each frame to plan its next hop / lane.
   LOOKAHEAD_M:           18,
