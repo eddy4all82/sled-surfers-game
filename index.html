@@ -621,7 +621,10 @@
     /* Loading */
     #loading {
       position: absolute;
-      bottom: 40px;
+      /* Sits above #studio-credit (which is ~50px tall, bottom: 16px),
+         so the "Loading audio …%" / "Ready!" text never overlaps the
+         developer credit pill. */
+      bottom: 84px;
       left: 50%;
       transform: translateX(-50%);
       font-family: 'Arial', sans-serif;
