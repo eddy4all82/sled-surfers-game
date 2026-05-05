@@ -629,6 +629,25 @@
       font-size: 14px;
       z-index: 25;
     }
+    #studio-credit {
+      position: absolute;
+      bottom: 14px;
+      left: 50%;
+      transform: translateX(-50%);
+      font-family: 'Arial', sans-serif;
+      color: #6a8eb5;
+      font-size: 11px;
+      letter-spacing: 1px;
+      opacity: 0.85;
+      z-index: 25;
+      pointer-events: none;
+      white-space: nowrap;
+    }
+    #studio-credit strong {
+      color: #ffd97a;
+      font-weight: 600;
+      letter-spacing: 1.5px;
+    }
 
     /* ── Settings overlay ───────────────────────────────── */
     .settings-btn {
@@ -890,6 +909,7 @@
     <button id="start-btn">PLAY</button>
     <button class="open-settings settings-btn">⚙ SETTINGS</button>
     <div id="loading">Loading assets...</div>
+    <div id="studio-credit">developed by <strong>MESESILIA LABS</strong></div>
   </div>
 
   <!-- Game Over Screen -->

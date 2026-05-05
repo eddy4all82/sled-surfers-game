@@ -1,5 +1,7 @@
 # Anas Surfers
 
+*Developed by Mesesilia Labs*
+
 A Subway Surfers–style 3D endless-runner web game built with [Three.js](https://threejs.org/) and [Vite](https://vitejs.dev/).
 
 A little penguin slides down a procedurally generated course through snow, city, and tropical biomes — dodging cars, drones, rockets, low-flying airplanes, and a giant high-rise mid-course (with a jump-through arch, if you're brave). The course has a real start and finish line, with a shareable seed.
