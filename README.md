@@ -1,4 +1,4 @@
-# Sled Surfers
+# Anas Surfers
 
 A Subway Surfers–style 3D endless-runner web game built with [Three.js](https://threejs.org/) and [Vite](https://vitejs.dev/).
 

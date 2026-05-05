@@ -1,5 +1,5 @@
 /**
- * Sled Surfers — Main Entry Point
+ * Anas Surfers — Main Entry Point
  *
  * Initializes the game engine, sets up the scene, and starts the game loop.
  * This is the file Vite loads from index.html.
