@@ -5701,6 +5701,8 @@ export class Game {
         playerDistance: this.distance,
         playerSpeed:    this.speed,
         obstacles:      this.obstacles,
+        scenery:        this.scenery,           // trees, lamps, signs, cabins (collidable subset)
+        buildings:      this.mountainBlocks,    // mid-rises with tunnel arches
         collectibles:   this.collectibles,
         courseLength:   this.map ? this.map.courseLength : 0,
         laneWidth:      GAME_CONFIG.LANE_WIDTH,
