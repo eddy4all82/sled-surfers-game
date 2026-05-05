@@ -11,6 +11,7 @@ import { InputManager } from './input-manager.js';
 import { GAME_CONFIG } from '../utils/constants.js';
 import { generateMap, randomSeed, DEFAULT_COURSE_LENGTH } from '../systems/map-generator.js';
 import { InstancedScenery } from '../systems/instanced-scenery.js';
+import { Rabbit } from '../systems/rabbit.js';
 import { loadSettings, saveSettings, resetSettings, DEFAULT_SETTINGS } from '../utils/settings.js';
 import { SoundLibrary, SOUND_EVENTS, EVENT_DUCK } from '../utils/sound-library.js';
 
@@ -23,7 +24,12 @@ export class Game {
     this.clock = new THREE.Clock();
 
     // Game state
-    this.state = 'loading'; // loading | ready | playing | exploding | gameover | won
+    // loading | ready | countdown | playing | exploding | gameover | won | lost_to_rabbit
+    // 'countdown' and 'lost_to_rabbit' are Jana Bunny only.
+    this.state = 'loading';
+    // Game mode: 'sprint' (Sprint Run, default) or 'jana_bunny' (race vs AI rabbit).
+    // Toggled on the start screen via the mode pill.
+    this.gameMode = 'sprint';
     this.speed = GAME_CONFIG.INITIAL_SPEED;
     this.distance = 0;
     this.score = 0;
@@ -834,6 +840,7 @@ export class Game {
     this._applySettings();
     this._wireSettingsUI();
     this._wireMobileJumpButton();
+    this._wireModeToggle();
 
     // UI — every gameplay-start click is also the moment to unlock the
     // SFX library so iOS / mobile Safari permits later automatic plays.
@@ -985,6 +992,32 @@ export class Game {
       btn.setAttribute('aria-label', 'Jump');
       btn.querySelector('.label').textContent = 'JUMP';
     }
+  }
+
+  // Start-screen mode pill — flips between Sprint Run / Jana Bunny.
+  // Sets this.gameMode and toggles a class on #start-screen so the
+  // themed SVG background swaps. Sprint Run path is the default and
+  // unchanged from before this UI existed.
+  _wireModeToggle() {
+    const startScreen = document.getElementById('start-screen');
+    const opts = document.querySelectorAll('#mode-toggle .mode-opt');
+    if (!startScreen || !opts.length) return;
+    const apply = (mode) => {
+      this.gameMode = mode === 'jana_bunny' ? 'jana_bunny' : 'sprint';
+      startScreen.classList.toggle('mode-sprint', this.gameMode === 'sprint');
+      startScreen.classList.toggle('mode-jana',   this.gameMode === 'jana_bunny');
+      opts.forEach((b) => {
+        b.classList.toggle('active', b.dataset.mode === this.gameMode);
+      });
+    };
+    opts.forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        apply(btn.dataset.mode);
+      });
+    });
+    // Apply default state on init.
+    apply(this.gameMode);
   }
 
   _wireSettingsUI() {
@@ -5152,6 +5185,7 @@ export class Game {
     // Death cam over — UI takes over. Stop the bg track that's been
     // ducked at 0.5 throughout the orbit; next round picks fresh.
     this._stopBgMusic();
+    if (this.rabbit) { this.rabbit.dispose(); this.rabbit = null; }
     this._clearSkyObjects();
     if (this.airTimeEl) this.airTimeEl.classList.remove('active');
     if (this.speedLinesEl) this.speedLinesEl.classList.remove('active');
@@ -5196,18 +5230,85 @@ export class Game {
   // ─────────────────────────────────────
 
   start() {
-    this.state = 'playing';
     this.startScreen.style.opacity = '0';
     setTimeout(() => { this.startScreen.style.display = 'none'; }, 500);
     this.hud.style.display = 'block';
     if (this.progressEl) this.progressEl.style.display = 'block';
-    this.startTime = performance.now();
-    this.clock.start();
     // Cut anything still ringing from a previous round (death_cam tail,
     // pending drone alert, etc.) so game_start plays clean.
     if (this.sounds) this.sounds.stopAllSources();
+    if (this.gameMode === 'jana_bunny') {
+      // Race mode: hold the world frozen and run a 3-2-1-GO countdown.
+      // Player + rabbit are visible at the start line during the count.
+      this._beginRaceCountdown();
+    } else {
+      // Sprint Run: straight into play, unchanged behaviour.
+      this.state = 'playing';
+      this.startTime = performance.now();
+      this.clock.start();
+      this._playBgMusic();
+      this.sounds.play('game_start');
+    }
+  }
+
+  // ── Jana Bunny: 3-2-1-GO race countdown ─────────────────────────────
+  // World stays frozen (state='countdown' → main loop skips _update).
+  // Each second fires countdown_tick; the GO! frame fires countdown_go,
+  // unlocks the world (state='playing'), starts music, and emits the
+  // standard game_start bark.
+  _beginRaceCountdown() {
+    this.state = 'countdown';
+    this.startTime = performance.now();
+    // Spawn the rabbit at the start line in the lane next to the player.
+    // Player rides lane 0 (centre); rabbit lane -1 (left).
+    if (!this.rabbit) {
+      this.rabbit = new Rabbit().init(this.scene, {
+        lane: -1,
+        laneWidth: GAME_CONFIG.LANE_WIDTH,
+      });
+    }
+    // Don't .start() the clock yet — _loop reads delta from this.clock.
+    // We DO start it on GO so the first playing-frame's delta is sane.
+    const overlay = document.getElementById('countdown-overlay');
+    if (!overlay) {
+      // No overlay element — fall back to immediate play.
+      this._raceGo();
+      return;
+    }
+    overlay.classList.add('show');
+    const showStep = (text, isGo) => {
+      overlay.innerHTML = '';
+      const div = document.createElement('div');
+      div.className = 'num' + (isGo ? ' go' : '');
+      div.textContent = text;
+      overlay.appendChild(div);
+    };
+    // Sequence: t=0 → 3, t=1s → 2, t=2s → 1, t=3s → GO + start.
+    showStep('3', false);
+    if (this.sounds) this.sounds.play('countdown_tick');
+    this._countdownTimers = [
+      setTimeout(() => { showStep('2', false); if (this.sounds) this.sounds.play('countdown_tick'); }, 1000),
+      setTimeout(() => { showStep('1', false); if (this.sounds) this.sounds.play('countdown_tick'); }, 2000),
+      setTimeout(() => { showStep('GO!', true); this._raceGo(); }, 3000),
+      setTimeout(() => { overlay.classList.remove('show'); overlay.innerHTML = ''; }, 3700),
+    ];
+  }
+
+  _raceGo() {
+    if (this.sounds) this.sounds.play('countdown_go');
+    this.state = 'playing';
+    this.clock.start();
     this._playBgMusic();
     this.sounds.play('game_start');
+  }
+
+  _cancelCountdown() {
+    if (this._countdownTimers) {
+      this._countdownTimers.forEach((t) => clearTimeout(t));
+      this._countdownTimers = null;
+    }
+    const overlay = document.getElementById('countdown-overlay');
+    if (overlay) { overlay.classList.remove('show'); overlay.innerHTML = ''; }
   }
 
   _playBgMusic() {
@@ -5421,20 +5522,26 @@ export class Game {
     this.gameOverScreen.style.display = 'none';
     this.hud.style.display = 'block';
     if (this.progressEl) this.progressEl.style.display = 'block';
-    this.state = 'playing';
-    this.clock.start();
     // Cut anything still ringing from the previous round (death_cam tail,
     // pending drone alert, etc.) so game_start plays clean.
     if (this.sounds) this.sounds.stopAllSources();
-    // Music restarts from the top with each new round
-    this._playBgMusic();
-    // Fire game_start every restart too — picks one clip at random from
-    // the pool just like the initial PLAY does.
-    this.sounds.play('game_start');
+    if (this.gameMode === 'jana_bunny') {
+      // Race-mode restart: re-run the 3-2-1-GO countdown.
+      this._beginRaceCountdown();
+    } else {
+      this.state = 'playing';
+      this.clock.start();
+      this._playBgMusic();
+      // Fire game_start every restart too — picks one clip at random from
+      // the pool just like the initial PLAY does.
+      this.sounds.play('game_start');
+    }
   }
 
   gameOver(title) {
     this.state = 'gameover';
+    this._cancelCountdown();
+    if (this.rabbit) { this.rabbit.dispose(); this.rabbit = null; }
     this._clearSkyObjects();
     if (this.airTimeEl) this.airTimeEl.classList.remove('active');
     if (this.speedLinesEl) this.speedLinesEl.classList.remove('active');
@@ -5538,6 +5645,12 @@ export class Game {
         c.rotation.z += delta * 3;
       }
     });
+
+    // Jana Bunny rabbit: tick every frame so it visually tracks
+    // (Phase 1: stationary stub; Phase 2 will add AI).
+    if (this.gameMode === 'jana_bunny' && this.rabbit) {
+      this.rabbit.update(delta, this.distance);
+    }
 
     this._updateMobileJumpButton();
 

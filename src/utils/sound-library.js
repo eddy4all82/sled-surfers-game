@@ -118,6 +118,14 @@ export const SOUND_EVENTS = {
     '/audio/Helwa.m4a',
     '/audio/Shima.m4a',
   ]},
+  // ── Jana Bunny race-mode events (Phase 1 stubs — drop files later) ──
+  // Countdown beep on each second of the 3 → 2 → 1 lead-in.
+  countdown_tick: { active: true, gain: 1.2, priority: true, files: [] },
+  // Distinct GO! sound when the race starts.
+  countdown_go:   { active: true, gain: 1.4, priority: true, files: [] },
+  // Played when the AI rabbit crosses the finish line first.
+  rabbit_win:     { active: true, gain: 1.0, priority: true, files: [] },
+
   // Cinematic death-cam stinger. Fires when the orbit camera starts
   // after a crash. Priority bus = not affected by any duck. The host
   // calls stopAllSources() before play() so this clip plays clean
