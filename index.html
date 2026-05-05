@@ -652,22 +652,34 @@
       opacity: 0.9;
     }
     #studio-credit .studio-pill {
-      /* Nintendo-style: pure red rounded pill with white text in a
-         rounded sans-serif. Border-radius 999 keeps it a perfect pill
-         regardless of width. */
-      background: #e60012;
-      color: #ffffff;
+      /* Nintendo-logo style: white-fill pill with a thick black outline,
+         black text in a rounded sans-serif, and a small ® mark in the
+         upper-right corner. Border-radius 999 keeps the shape a perfect
+         pill regardless of contents. */
+      position: relative;
+      background: #ffffff;
+      color: #000000;
       font-family: 'Arial Rounded MT Bold', 'Helvetica Rounded', 'Quicksand',
                    'Nunito', 'Segoe UI', system-ui, sans-serif;
-      font-weight: 700;
-      font-size: 13px;
-      letter-spacing: 0.6px;
-      padding: 4px 14px 5px;
+      font-weight: 800;
+      font-size: 16px;
+      letter-spacing: 0.4px;
+      padding: 4px 18px 5px;
+      border: 2.5px solid #000000;
       border-radius: 999px;
       line-height: 1;
-      box-shadow: 0 2px 6px rgba(230, 0, 18, 0.35), inset 0 -1px 0 rgba(0,0,0,0.18);
       text-transform: none;
       white-space: nowrap;
+    }
+    #studio-credit .studio-pill::after {
+      content: '®';
+      position: absolute;
+      top: -2px;
+      right: -8px;
+      font-size: 8px;
+      font-weight: 700;
+      color: #000000;
+      font-family: 'Arial', sans-serif;
     }
 
     /* ── Settings overlay ───────────────────────────────── */
@@ -932,7 +944,7 @@
     <div id="loading">Loading assets...</div>
     <div id="studio-credit">
       <span class="credit-by">developed by</span>
-      <span class="studio-pill">Mesesilia Labs</span>
+      <span class="studio-pill">Mesesilia</span>
     </div>
   </div>
 
