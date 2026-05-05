@@ -38,6 +38,7 @@ export const GAME_CONFIG = {
   PARACHUTE_MAX_ENERGY:   100,  // Energy bar maximum
   PARACHUTE_DRAIN_RATE:   25,   // Energy units consumed per second while open
   PARACHUTE_RECHARGE_RATE:15,   // Energy units gained per second while airborne (no chute)
+  PARACHUTE_GROUND_RECHARGE_RATE: 5,  // Slower passive recharge while on the ground (no chute)
   MULTI_JUMP_COST:        20,   // Energy consumed per in-air jump press
 
   // Sky hazards

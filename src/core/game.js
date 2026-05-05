@@ -5677,11 +5677,16 @@ export class Game {
           || this.playerY <= 0.01) {
         this._closeParachute();
       }
-    } else if (airborne && this.parachuteEnergy < GAME_CONFIG.PARACHUTE_MAX_ENERGY) {
-      // Recharge in mid-air without the chute
+    } else if (this.parachuteEnergy < GAME_CONFIG.PARACHUTE_MAX_ENERGY) {
+      // Passive recharge — faster while airborne (with the chute closed),
+      // slower but still ticking while on the ground so the player isn't
+      // stuck waiting after a heavy multi-jump string.
+      const rate = airborne
+        ? GAME_CONFIG.PARACHUTE_RECHARGE_RATE
+        : GAME_CONFIG.PARACHUTE_GROUND_RECHARGE_RATE;
       this.parachuteEnergy = Math.min(
         GAME_CONFIG.PARACHUTE_MAX_ENERGY,
-        this.parachuteEnergy + GAME_CONFIG.PARACHUTE_RECHARGE_RATE * delta,
+        this.parachuteEnergy + rate * delta,
       );
     }
 
