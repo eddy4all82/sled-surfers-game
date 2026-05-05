@@ -910,18 +910,22 @@
       </div>
       <div class="recharge-text">+15/s</div>
     </div>
-    <div id="course-progress">
-      <div class="flag-top">🏁</div>
-      <div class="bar-wrap">
-        <div class="bar-fill"></div>
-        <div class="player-marker"></div>
-      </div>
-      <div class="start-label">START</div>
-      <div class="remaining">2000m left</div>
-    </div>
     <div id="hazard-warn-left" class="hazard-warn">⚠</div>
     <div id="hazard-warn-right" class="hazard-warn">⚠</div>
     <div id="hazard-warn-center" class="hazard-warn-center">! WARNING — LOW PASS !</div>
+  </div>
+
+  <!-- Course progress bar — sibling of #hud (NOT inside it) so its
+       top: 50% resolves against the viewport, not the HUD's auto-height
+       wrapper. JS toggles display in sync with #hud. -->
+  <div id="course-progress" style="display:none;">
+    <div class="flag-top">🏁</div>
+    <div class="bar-wrap">
+      <div class="bar-fill"></div>
+      <div class="player-marker"></div>
+    </div>
+    <div class="start-label">START</div>
+    <div class="remaining">2000m left</div>
   </div>
 
   <!-- Start Screen -->

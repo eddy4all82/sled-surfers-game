@@ -5154,6 +5154,7 @@ export class Game {
     if (this.airTimeEl) this.airTimeEl.classList.remove('active');
     if (this.speedLinesEl) this.speedLinesEl.classList.remove('active');
     this.hud.style.display = 'none';
+    if (this.progressEl) this.progressEl.style.display = 'none';
     const titleEl = document.getElementById('game-over-title');
     if (titleEl) titleEl.textContent = title || 'Game Over!';
     document.getElementById('final-score').textContent =
@@ -5197,6 +5198,7 @@ export class Game {
     this.startScreen.style.opacity = '0';
     setTimeout(() => { this.startScreen.style.display = 'none'; }, 500);
     this.hud.style.display = 'block';
+    if (this.progressEl) this.progressEl.style.display = 'block';
     this.startTime = performance.now();
     this.clock.start();
     // Cut anything still ringing from a previous round (death_cam tail,
@@ -5416,6 +5418,7 @@ export class Game {
     // UI
     this.gameOverScreen.style.display = 'none';
     this.hud.style.display = 'block';
+    if (this.progressEl) this.progressEl.style.display = 'block';
     this.state = 'playing';
     this.clock.start();
     // Cut anything still ringing from the previous round (death_cam tail,
@@ -5434,6 +5437,7 @@ export class Game {
     if (this.airTimeEl) this.airTimeEl.classList.remove('active');
     if (this.speedLinesEl) this.speedLinesEl.classList.remove('active');
     this.hud.style.display = 'none';
+    if (this.progressEl) this.progressEl.style.display = 'none';
     const titleEl = document.getElementById('game-over-title');
     if (titleEl) titleEl.textContent = title || 'Game Over!';
     document.getElementById('final-score').textContent =
@@ -6126,6 +6130,7 @@ export class Game {
     if (this.airTimeEl) this.airTimeEl.classList.remove('active');
     if (this.speedLinesEl) this.speedLinesEl.classList.remove('active');
     this.hud.style.display = 'none';
+    if (this.progressEl) this.progressEl.style.display = 'none';
 
     // Populate win-screen stats
     if (this.winStatsEl) {
