@@ -235,10 +235,11 @@ export class Rabbit {
     root.add(mkWhisker( 0.06, 0.88, 1.00,  0.40, 0.85, 1.02));
     root.add(mkWhisker( 0.06, 0.84, 1.00,  0.36, 0.78, 1.02));
 
-    // Scale the whole bunny down to 60% of its design size — keeps the
-    // model proportions intact while dropping its on-screen footprint
-    // alongside the BODY_HALF_W/L hit-box constants in JANA_BUNNY.
-    root.scale.setScalar(0.6);
+    // Scale the whole bunny to 69% of its design size (60% × 1.15
+    // bump). Single uniform scale keeps proportions intact and shrinks
+    // the entire mesh tree at once. Pair this with BODY_HALF_W/L in
+    // JANA_BUNNY so collisions match what's drawn.
+    root.scale.setScalar(0.69);
 
     root.position.set(lane * laneWidth, 0, 0);
     scene.add(root);
