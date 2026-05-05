@@ -74,6 +74,40 @@ export const GAME_CONFIG = {
 };
 
 /**
+ * Jana Bunny race-mode tuning. The AI rabbit's behavior; touched only
+ * when gameMode === 'jana_bunny'. Sprint Run never reads from this.
+ */
+export const JANA_BUNNY = {
+  // Forward speed targets ~95% of the player's average pace so a clean
+  // run barely beats the rabbit and a sloppy run loses. Adjust per
+  // difficulty later.
+  RABBIT_SPEED:           28,    // World units / second
+  // Hop cadence + arc heights. The rabbit is ALWAYS in a hop — the
+  // moment one finishes, the next starts. Two peak heights are picked
+  // based on what's coming up next: LOW threads through bridge holes
+  // and avoids going too high; HIGH clears cars and other low ground
+  // hazards.
+  HOP_INTERVAL:          0.55,   // Min seconds between hops (also ~the natural arc duration at default heights)
+  HOP_PEAK_LOW:          1.6,    // Default & for fitting through low-pass openings
+  HOP_PEAK_HIGH:         3.2,    // For clearing cars / mid-height hazards
+  HOP_GRAVITY:           28,     // Custom gravity for the rabbit's arc (independent of player physics)
+  // Look-ahead window: the rabbit scans this many world-units ahead
+  // for upcoming obstacles each frame to plan its next hop / lane.
+  LOOKAHEAD_M:           18,
+  // Lane swerve threshold: rabbit changes lane when current lane has
+  // a blocker within this distance and another lane is clear.
+  SWERVE_LOOKAHEAD_M:    14,
+  LANE_SWITCH_RATE:      8,      // Lerp rate for lane X transitions (higher = snappier)
+  // Coin pickup: rabbit scoops up coins it passes while in its lane.
+  COIN_PICKUP_DISTANCE:  1.6,    // World units along Z axis
+  COIN_PICKUP_LANE_DX:   0.9,    // Half-width of pickup window across X (lane width is 3)
+  // Collision penalty: when a hop fails to clear, the rabbit's speed
+  // is throttled briefly so the AI's mistakes have weight.
+  COLLISION_PENALTY_SEC: 1.0,    // Seconds the speed cut lasts
+  COLLISION_SPEED_MULT:  0.4,    // Multiplier on RABBIT_SPEED during the penalty
+};
+
+/**
  * Asset paths — maps asset names to their GLB file locations.
  * These paths are relative to the public/ directory.
  * Update these once you generate assets with the AI workflow.

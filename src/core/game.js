@@ -5693,10 +5693,17 @@ export class Game {
       }
     });
 
-    // Jana Bunny rabbit: tick every frame so it visually tracks
-    // (Phase 1: stationary stub; Phase 2 will add AI).
-    if (this.gameMode === 'jana_bunny' && this.rabbit) {
-      this.rabbit.update(delta, this.distance);
+    // Jana Bunny rabbit: tick every frame with the live game env
+    // so the AI can plan hops, swerve, scoop coins, and apply
+    // collision penalties. Frozen during 'countdown' state.
+    if (this.gameMode === 'jana_bunny' && this.rabbit && this.state === 'playing') {
+      this.rabbit.update(delta, {
+        playerDistance: this.distance,
+        obstacles:      this.obstacles,
+        collectibles:   this.collectibles,
+        courseLength:   this.map ? this.map.courseLength : 0,
+        laneWidth:      GAME_CONFIG.LANE_WIDTH,
+      });
     }
 
     this._updateMobileJumpButton();
