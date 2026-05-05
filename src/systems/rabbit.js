@@ -236,8 +236,8 @@ export class Rabbit {
   }
 
   /**
-   * env: { playerDistance, playerSpeed, obstacles, scenery, buildings,
-   *        collectibles, courseLength, laneWidth }
+   * env: { playerDistance, playerSpeed, playerX, playerY, obstacles,
+   *        scenery, buildings, collectibles, courseLength, laneWidth }
    */
   update(delta, env = {}) {
     if (!this.group) return;
@@ -249,22 +249,36 @@ export class Rabbit {
     const buildings      = env.buildings    || [];
     const collectibles   = env.collectibles || [];
     const laneWidth      = env.laneWidth    || this._laneWidth;
+    const playerX        = env.playerX      || 0;
+    const playerY        = env.playerY      || 0;
 
     // Build a unified threat set for THIS frame. Each entry has:
     //   { obj, dist, lane, kind, height, len, width, x }
-    // dist = world-distance from rabbit.
+    // dist = world-distance from rabbit (positive = ahead).
     const threats = this._collectThreats(obstacles, scenery, buildings, playerDistance);
+
+    // The player itself is also a threat the rabbit can't penetrate.
+    threats.push({
+      obj:    { __isPlayer: true },
+      dist:   playerDistance - this.distance,
+      x:      playerX,
+      lane:   Math.round(playerX / laneWidth),
+      kind:   'player',
+      height: 1.6,         // tall enough that rabbit's HIGH hop just barely clears
+      len:    2.0,
+      width:  1.4,
+      playerY,
+    });
 
     // ── 1. Penalty timer
     if (this._penaltyT > 0) this._penaltyT = Math.max(0, this._penaltyT - delta);
 
-    // ── 2. Forward speed
+    // ── 2. Forward speed (proposed)
     const baseSpeed = playerSpeed * JANA_BUNNY.RABBIT_SPEED_MULT;
     const speedMul  = this._penaltyT > 0 ? JANA_BUNNY.COLLISION_SPEED_MULT : 1.0;
     const speed     = baseSpeed * speedMul;
-    this.distance  += speed * delta;
 
-    // ── 3. Lane planning (with building/scenery/coin awareness)
+    // ── 3. Lane planning
     this._planLane(threats, collectibles, playerDistance);
 
     // ── 4. Lane X interpolation
@@ -287,11 +301,33 @@ export class Rabbit {
       this._inHop = false;
     }
 
-    // ── 6. Coin pickup
-    this._scoopCoins(collectibles, playerDistance);
+    // ── 6. HARD PHYSICS — clamp forward advance against any uncleared
+    //       threat ahead. The rabbit physically cannot pass through.
+    const myX = this.group.position.x;
+    const proposed = speed * delta;
+    let safeAdvance = proposed;
+    for (const t of threats) {
+      // We only care about threats whose body the rabbit could enter
+      // this frame (leading edge currently <= proposed advance).
+      const leadingEdge = t.dist - t.len / 2;
+      if (leadingEdge > proposed + 0.3) continue;       // too far ahead
+      if (t.dist + t.len / 2 < -0.3) continue;          // already fully past
+      if (this._canClear(t, this._hopY, myX)) continue; // rabbit will fly over / threads arch
+      // Blocked. Clamp to just before the leading edge (or 0 if past).
+      const stopAt = Math.max(0, leadingEdge - 0.2);
+      if (stopAt < safeAdvance) safeAdvance = stopAt;
+      // Mark resolved so the speed-cut penalty doesn't double-fire.
+      if (!this._resolvedThreats.has(t.obj)) {
+        this._resolvedThreats.add(t.obj);
+        if (this._penaltyT <= 0) this._penaltyT = JANA_BUNNY.COLLISION_PENALTY_SEC;
+      }
+      // The pillar/wall might be wider than its leading edge alone —
+      // keep scanning others in case they clamp tighter.
+    }
+    this.distance += safeAdvance;
 
-    // ── 7. Collision check across ALL threats (including buildings)
-    this._checkCollisions(threats);
+    // ── 7. Coin pickup
+    this._scoopCoins(collectibles, playerDistance);
 
     // ── 8. Render position + tilt + ear flap
     this.group.position.y = this._hopY;
@@ -303,6 +339,37 @@ export class Rabbit {
       this._earL.rotation.x = earSwing;
       this._earR.rotation.x = earSwing;
     }
+  }
+
+  /**
+   * Returns true if the rabbit at (hopY, myX) will SAFELY pass over /
+   * around / through this threat. Used as the gate on forward advance:
+   * if false, the rabbit's distance is clamped to just before the
+   * threat's leading edge.
+   */
+  _canClear(t, hopY, myX) {
+    if (t.kind === 'building') {
+      // Threading the centre arch: must be in centre lane laterally
+      // AND between archYMin..archYMax vertically (with margins).
+      const insideArchX = Math.abs(myX) <= (t.archHalfW - 0.15);
+      const insideArchY = (hopY >= t.archYMin + 0.3) &&
+                          (hopY <= t.archYMax - 0.3);
+      return insideArchX && insideArchY;
+    }
+    // Lateral clearance — outside threat's X footprint = safe.
+    const halfW = t.width / 2 + 0.4;
+    if (Math.abs(t.x - myX) > halfW) return true;
+    if (t.kind === 'wall') {
+      // Can't be cleared by jumping (too tall); only laneswerve out.
+      return false;
+    }
+    if (t.kind === 'player') {
+      // Can be cleared by jumping over OR by being in a different lane.
+      // Player's body is short (~1.6m); HIGH hop (3.5m) clears.
+      return hopY >= t.height + 0.2;
+    }
+    // 'ground' — cleared if hop arc puts us above the top.
+    return hopY >= t.height - 0.2;
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -390,12 +457,17 @@ export class Rabbit {
     for (const t of threats) {
       if (t.dist <= 0 || t.dist > window) continue;
       if (t.kind === 'wall') {
-        // Tall scenery in a lane is a hard cost.
         const idx = t.lane + 1;
         if (idx >= 0 && idx <= 2) score[idx] += 5;
       } else if (t.kind === 'ground') {
         const idx = t.lane + 1;
         if (idx >= 0 && idx <= 2) score[idx] += 1;
+      } else if (t.kind === 'player') {
+        // Rabbit prefers NOT to share a lane with the penguin —
+        // costly if very close, mild penalty further out.
+        const idx = t.lane + 1;
+        const closeness = 1 - Math.min(1, t.dist / window);
+        if (idx >= 0 && idx <= 2) score[idx] += 4 * closeness;
       }
     }
     // Coins pull the rabbit slightly toward their lane (small bonus).
@@ -472,52 +544,6 @@ export class Rabbit {
       if (Math.abs((coin.position.x ?? 0) - myX) > dx) continue;
       coin.userData.collected = true;
       coin.visible = false;
-    }
-  }
-
-  // ─────────────────────────────────────────────────────────────
-  // Collision check
-  // ─────────────────────────────────────────────────────────────
-
-  _checkCollisions(threats) {
-    const myX = this.group.position.x;
-    for (const t of threats) {
-      if (this._resolvedThreats.has(t.obj)) continue;
-      const halfL = t.len / 2 + 0.4;
-      // Only resolve when the rabbit is currently passing through the
-      // threat's distance band.
-      if (t.dist < -halfL || t.dist > halfL) continue;
-
-      if (t.kind === 'building') {
-        // Building: if rabbit is OUTSIDE the central arch lateral band
-        // OR Y is outside [archYMin+0.3, archYMax-0.3], it slams into
-        // pillar/lintel.
-        const insideArchX = Math.abs(myX) <= (t.archHalfW - 0.1);
-        const insideArchY = (this._hopY >= t.archYMin + 0.3) &&
-                            (this._hopY <= t.archYMax - 0.3);
-        if (insideArchX && insideArchY) {
-          // Successful thread.
-          this._resolvedThreats.add(t.obj);
-          continue;
-        }
-        // Otherwise: collision.
-        this._resolvedThreats.add(t.obj);
-        if (this._penaltyT <= 0) this._penaltyT = JANA_BUNNY.COLLISION_PENALTY_SEC;
-        continue;
-      }
-
-      // Ground / wall: lateral X check
-      const halfW = t.width / 2 + 0.5;
-      if (Math.abs(t.x - myX) > halfW) continue;
-      // Cleared on top? No collision (only applies to 'ground' which is
-      // jumpable; 'wall' is too tall and the rabbit shouldn't be in this
-      // lane anyway).
-      if (t.kind === 'ground' && this._hopY >= t.height - 0.2) {
-        this._resolvedThreats.add(t.obj);
-        continue;
-      }
-      this._resolvedThreats.add(t.obj);
-      if (this._penaltyT <= 0) this._penaltyT = JANA_BUNNY.COLLISION_PENALTY_SEC;
     }
   }
 

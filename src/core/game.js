@@ -974,6 +974,29 @@ export class Game {
   //     gameover, won). CSS .game-active class gates visibility.
   //   • While playing, label flips between JUMP (on ground) and PARA
   //     (airborne) to match the active behavior.
+  // Jana Bunny — player vs rabbit physical collision. Fires only when
+  // the player catches up to the rabbit at ground level: if their
+  // bodies overlap in lane + Z, the player crashes (this._die fires
+  // with kind 'rabbit'). The rabbit can't penetrate the player on
+  // its side either — that's enforced inside Rabbit.update via the
+  // player-as-threat hard clamp.
+  _checkRabbitKill() {
+    if (this.state !== 'playing' || !this.rabbit || !this.rabbit.group) return;
+    if (!this.player) return;
+    const r = this.rabbit.group;
+    // Z relative to player camera: same as rabbit's screen Z.
+    const dz = r.position.z;          // rabbit's screen-Z (player is at 0)
+    if (Math.abs(dz) > 1.4) return;   // out of bumper range
+    const dx = r.position.x - this.player.position.x;
+    if (Math.abs(dx) > 1.2) return;   // not in our lane / lateral gap
+    // Player must be at ground level (or close) — if both are airborne
+    // and well above the rabbit, no collision. Player Y > rabbit top + small margin = safe.
+    const rabbitTop = (r.position.y || 0) + 1.6;  // rabbit body height ~1.6m
+    if (this.playerY > rabbitTop + 0.2) return;
+    // Crash.
+    this._die(this.player.position, 'rabbit', 'CAUGHT BY THE BUNNY!');
+  }
+
   _updateMobileJumpButton() {
     const btn = this._mobileJumpBtn;
     if (!btn) return;
@@ -5700,6 +5723,8 @@ export class Game {
       this.rabbit.update(delta, {
         playerDistance: this.distance,
         playerSpeed:    this.speed,
+        playerX:        this.player ? this.player.position.x : 0,
+        playerY:        this.playerY || 0,
         obstacles:      this.obstacles,
         scenery:        this.scenery,           // trees, lamps, signs, cabins (collidable subset)
         buildings:      this.mountainBlocks,    // mid-rises with tunnel arches
@@ -5707,6 +5732,12 @@ export class Game {
         courseLength:   this.map ? this.map.courseLength : 0,
         laneWidth:      GAME_CONFIG.LANE_WIDTH,
       });
+      // Player-vs-rabbit kill check: if the player runs into the rabbit
+      // (same Z band, lateral overlap, both at ground/low Y), the
+      // player loses. The rabbit's own hard physics keeps it from
+      // entering the player, so collisions fire only when the PLAYER
+      // catches up and rams the rabbit.
+      this._checkRabbitKill();
     }
 
     this._updateMobileJumpButton();
