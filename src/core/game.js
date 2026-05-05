@@ -1747,7 +1747,7 @@ export class Game {
       const tick = document.createElement('div');
       tick.className = 'milestone';
       const t = m.z / this.map.courseLength;
-      tick.style.left = `${(t * 100).toFixed(1)}%`;
+      tick.style.bottom = `${(t * 100).toFixed(1)}%`;
       const lbl = document.createElement('span');
       lbl.className = 'ml';
       lbl.textContent = m.label;
@@ -5972,8 +5972,8 @@ export class Game {
     const pct = Math.max(0, Math.min(1, this.distance / len));
 
     // HUD update
-    if (this.progressFillEl) this.progressFillEl.style.transform = `scaleX(${pct})`;
-    if (this.progressMarkerEl) this.progressMarkerEl.style.left = `${(pct * 100).toFixed(1)}%`;
+    if (this.progressFillEl) this.progressFillEl.style.transform = `scaleY(${pct})`;
+    if (this.progressMarkerEl) this.progressMarkerEl.style.bottom = `${(pct * 100).toFixed(1)}%`;
     if (this.progressRemainEl) {
       const remaining = Math.max(0, Math.floor(len - this.distance));
       this.progressRemainEl.textContent = `${remaining}m left`;
