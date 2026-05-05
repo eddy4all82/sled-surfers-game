@@ -5417,14 +5417,21 @@ export class Game {
   }
 
   // Return to the start screen (mode selector). Used by the MAIN MENU
-  // button on both the game-over and win panels. Cleans up active
-  // round state without rolling a new course; the next PLAY click can
-  // pick a different mode.
+  // button on both the game-over and win panels. Runs a full silent
+  // reset (fresh seed, zeroed score/distance, world rebuilt, player
+  // recentred, parachute energy refilled, etc.) so a subsequent PLAY
+  // — possibly in a DIFFERENT mode — starts from a true clean slate.
   _returnToMainMenu() {
     this._cancelCountdown();
-    this._stopBgMusic();
     if (this.sounds) this.sounds.stopAllSources();
+    this._stopBgMusic();
     if (this.rabbit) { this.rabbit.dispose(); this.rabbit = null; }
+    // Full reset of round state (counters, player position, world spawns,
+    // explosion debris, parachute, biome, etc.) — silent: true skips
+    // the round-start coda so we don't kick off music/countdown.
+    if (this.map) {
+      this.restart({ newSeed: true, silent: true });
+    }
     // Hide the round UI.
     if (this.gameOverScreen) this.gameOverScreen.style.display = 'none';
     const winScreen = document.getElementById('win-screen');
@@ -5555,6 +5562,11 @@ export class Game {
 
     // UI
     this.gameOverScreen.style.display = 'none';
+    // Caller (MAIN MENU) can pass silent:true to do a full state reset
+    // without starting the new round (no HUD reveal, no music, no
+    // countdown, no game_start bark). Used to bring the player cleanly
+    // back to the start screen.
+    if (opts.silent) return;
     this.hud.style.display = 'block';
     if (this.progressEl) this.progressEl.style.display = 'block';
     // Cut anything still ringing from the previous round (death_cam tail,
