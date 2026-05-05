@@ -629,24 +629,45 @@
       font-size: 14px;
       z-index: 25;
     }
+    /* Studio credit — two lines: "developed by" caption above a
+       Nintendo-style red pill containing the studio name. */
     #studio-credit {
       position: absolute;
-      bottom: 14px;
+      bottom: 16px;
       left: 50%;
       transform: translateX(-50%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+      z-index: 25;
+      pointer-events: none;
+    }
+    #studio-credit .credit-by {
       font-family: 'Arial', sans-serif;
       color: #6a8eb5;
       font-size: 11px;
-      letter-spacing: 1px;
-      opacity: 0.85;
-      z-index: 25;
-      pointer-events: none;
-      white-space: nowrap;
+      letter-spacing: 2px;
+      text-transform: lowercase;
+      opacity: 0.9;
     }
-    #studio-credit strong {
-      color: #ffd97a;
-      font-weight: 600;
-      letter-spacing: 1.5px;
+    #studio-credit .studio-pill {
+      /* Nintendo-style: pure red rounded pill with white text in a
+         rounded sans-serif. Border-radius 999 keeps it a perfect pill
+         regardless of width. */
+      background: #e60012;
+      color: #ffffff;
+      font-family: 'Arial Rounded MT Bold', 'Helvetica Rounded', 'Quicksand',
+                   'Nunito', 'Segoe UI', system-ui, sans-serif;
+      font-weight: 700;
+      font-size: 13px;
+      letter-spacing: 0.6px;
+      padding: 4px 14px 5px;
+      border-radius: 999px;
+      line-height: 1;
+      box-shadow: 0 2px 6px rgba(230, 0, 18, 0.35), inset 0 -1px 0 rgba(0,0,0,0.18);
+      text-transform: none;
+      white-space: nowrap;
     }
 
     /* ── Settings overlay ───────────────────────────────── */
@@ -909,7 +930,10 @@
     <button id="start-btn">PLAY</button>
     <button class="open-settings settings-btn">⚙ SETTINGS</button>
     <div id="loading">Loading assets...</div>
-    <div id="studio-credit">developed by <strong>MESESILIA LABS</strong></div>
+    <div id="studio-credit">
+      <span class="credit-by">developed by</span>
+      <span class="studio-pill">Mesesilia Labs</span>
+    </div>
   </div>
 
   <!-- Game Over Screen -->
