@@ -1742,8 +1742,10 @@ export class Game {
     // Clear any existing milestone ticks
     this.progressBarWrapEl.querySelectorAll('.milestone').forEach(n => n.remove());
     for (const m of this.map.milestones) {
-      // Skip the start/finish marker — covered by the start label and flag icon
-      if (m.label === 'START' || m.label === 'FINISH') continue;
+      // Skip the start/finish marker — covered by the start label and flag icon.
+      // Skip HALFWAY too — visually noisy on the bar; the player can read
+      // their position from the marker + remaining-meters readout.
+      if (m.label === 'START' || m.label === 'FINISH' || m.label === 'HALFWAY') continue;
       const tick = document.createElement('div');
       tick.className = 'milestone';
       const t = m.z / this.map.courseLength;
