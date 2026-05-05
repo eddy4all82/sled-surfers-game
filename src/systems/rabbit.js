@@ -67,6 +67,7 @@ export class Rabbit {
     this._hopVel = 0;
     this._inHop = false;
     this._lastPeak = JANA_BUNNY.HOP_PEAK_LOW;
+    this._settleT = 0;             // brief settle window after a MEGA landing
 
     this._penaltyT = 0;
     this._resolvedThreats = new WeakSet();
@@ -281,24 +282,41 @@ export class Rabbit {
     // ── 3. Lane planning
     this._planLane(threats, collectibles, playerDistance);
 
-    // ── 4. Lane X interpolation
+    // ── 4. Lane X interpolation — but ALSO blocked by the same
+    //       threats that block forward distance, so the mesh can't
+    //       slide laterally through an obstacle while the distance
+    //       clamp is holding.
     const targetX = this._targetLane * laneWidth;
     const currentX = this.group.position.x;
     const k = JANA_BUNNY.LANE_SWITCH_RATE;
-    this.group.position.x = currentX + (targetX - currentX) * Math.min(1, k * delta);
+    let proposedX = currentX + (targetX - currentX) * Math.min(1, k * delta);
+    proposedX = this._clampLateralX(currentX, proposedX, threats);
+    this.group.position.x = proposedX;
     if (Math.abs(this.group.position.x - targetX) < 0.05) {
       this.lane = this._targetLane;
       this.group.position.x = targetX;
     }
 
-    // ── 5. Hop arc — schedule new hop when grounded
-    if (!this._inHop) this._startHop(threats, speed);
-    this._hopVel -= JANA_BUNNY.HOP_GRAVITY * delta;
-    this._hopY   += this._hopVel * delta;
-    if (this._hopY <= 0) {
-      this._hopY = 0;
-      this._hopVel = 0;
-      this._inHop = false;
+    // ── 5. Hop arc — schedule new hop when grounded.
+    //       After a MEGA landing, hold a tiny settle window so the
+    //       transition back to running hops doesn't read as instant
+    //       bouncing.
+    if (this._settleT > 0) this._settleT = Math.max(0, this._settleT - delta);
+    if (!this._inHop && this._settleT <= 0) this._startHop(threats, speed);
+    if (this._inHop) {
+      this._hopVel -= JANA_BUNNY.HOP_GRAVITY * delta;
+      this._hopY   += this._hopVel * delta;
+      if (this._hopY <= 0) {
+        this._hopY = 0;
+        this._hopVel = 0;
+        this._inHop = false;
+        // If the hop we just finished was a MEGA, give the rabbit a
+        // brief grounded settle (~0.18s) before launching into rapid
+        // running hops. Avoids the abrupt "land + ricochet" feel.
+        if (this._lastPeak >= JANA_BUNNY.HOP_PEAK_MEGA - 0.01) {
+          this._settleT = 0.18;
+        }
+      }
     }
 
     // ── 6. HARD PHYSICS — clamp forward advance against any uncleared
@@ -339,6 +357,42 @@ export class Rabbit {
       this._earL.rotation.x = earSwing;
       this._earR.rotation.x = earSwing;
     }
+  }
+
+  /**
+   * Lateral X clamp — refuses to slide the rabbit through a threat's
+   * footprint when the rabbit is currently within (or about to be
+   * within) the threat's Z band AND can't clear it vertically.
+   *
+   * This is what stops the rabbit from "phasing through" a tree/lamp
+   * during a lane swerve while the forward distance is already
+   * clamped at the leading edge.
+   */
+  _clampLateralX(currentX, proposedX, threats) {
+    if (proposedX === currentX) return proposedX;
+    let resultX = proposedX;
+    for (const t of threats) {
+      // Only consider threats currently overlapping the rabbit's Z
+      // band — those are the ones we could slide laterally into.
+      const inBand = (t.dist > -(t.len / 2) - 0.5) && (t.dist < (t.len / 2) + 0.5);
+      if (!inBand) continue;
+      // If the rabbit can clear the threat vertically (or it's not
+      // actually blocking us laterally at this Y), no clamp needed.
+      if (this._canClear(t, this._hopY, resultX)) continue;
+      // Unsafe at proposed X. If the current X is safe, hold X here.
+      if (this._canClear(t, this._hopY, currentX)) {
+        resultX = currentX;
+        // Don't break — there might be other threats that demand
+        // a different (smaller) X. We want the most-restrictive
+        // safe X for this frame.
+        continue;
+      }
+      // Else: already unsafe at currentX. Don't make it worse — pick
+      // whichever direction moves us further from the threat centre.
+      const movingToward = (proposedX > currentX) === (t.x > currentX);
+      if (movingToward) resultX = currentX;
+    }
+    return resultX;
   }
 
   /**
