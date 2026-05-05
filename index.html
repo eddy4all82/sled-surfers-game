@@ -653,10 +653,10 @@
     }
     #studio-credit .studio-pill {
       /* Nintendo-logo style: white-fill pill with a thick black outline,
-         black text in a rounded sans-serif, and a small ® mark in the
-         upper-right corner. Border-radius 999 keeps the shape a perfect
-         pill regardless of contents. */
-      position: relative;
+         black text in a rounded sans-serif, and a small ® mark sitting
+         INSIDE the pill, right after the last letter, raised like a
+         superscript. Border-radius 999 keeps the shape a perfect pill
+         regardless of contents. */
       background: #ffffff;
       color: #000000;
       font-family: 'Arial Rounded MT Bold', 'Helvetica Rounded', 'Quicksand',
@@ -671,15 +671,14 @@
       text-transform: none;
       white-space: nowrap;
     }
-    #studio-credit .studio-pill::after {
-      content: '®';
-      position: absolute;
-      top: -2px;
-      right: -8px;
+    #studio-credit .studio-pill .reg {
+      display: inline-block;
+      vertical-align: super;
       font-size: 8px;
       font-weight: 700;
-      color: #000000;
       font-family: 'Arial', sans-serif;
+      margin-left: 1px;
+      line-height: 1;
     }
 
     /* ── Settings overlay ───────────────────────────────── */
@@ -944,7 +943,7 @@
     <div id="loading">Loading assets...</div>
     <div id="studio-credit">
       <span class="credit-by">developed by</span>
-      <span class="studio-pill">Mesesilia</span>
+      <span class="studio-pill">Mesesilia<span class="reg">&reg;</span></span>
     </div>
   </div>
 
