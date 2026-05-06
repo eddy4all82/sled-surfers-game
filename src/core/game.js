@@ -5788,9 +5788,13 @@ export class Game {
     // so the AI can plan hops, swerve, scoop coins, and apply
     // collision penalties. Frozen during 'countdown' state.
     if (this.gameMode === 'jana_bunny' && this.rabbit && this.state === 'playing') {
+      // In debug rabbit-cam mode: the player is frozen (speed=0) but
+      // the rabbit keeps racing at its own fixed pace through the
+      // static world.
+      const rabbitPlayerSpeed = this._debugRabbitCam ? 18 : this.speed;
       this.rabbit.update(delta, {
         playerDistance: this.distance,
-        playerSpeed:    this.speed,
+        playerSpeed:    rabbitPlayerSpeed,
         playerX:        this.player ? this.player.position.x : 0,
         playerY:        this.playerY || 0,
         obstacles:      this.obstacles,
@@ -5818,6 +5822,19 @@ export class Game {
 
     this._updateMobileJumpButton();
 
+    // Debug rabbit-cam: lock the camera onto the rabbit + hide the
+    // penguin mesh, regardless of game state. Runs after every other
+    // camera write so the override always wins. When the flag flips
+    // off, restore default visibility next frame.
+    if (this._debugRabbitCam && this.rabbit && this.rabbit.group) {
+      const r = this.rabbit.group.position;
+      this.camera.position.set(r.x, r.y + 8, r.z - 12);
+      this.camera.lookAt(r.x, r.y + 2, r.z + 20);
+      if (this.player) this.player.visible = false;
+    } else if (this.player && !this.player.visible) {
+      this.player.visible = true;
+    }
+
     this.renderer.render(this.scene, this.camera);
   }
 
@@ -5827,10 +5844,11 @@ export class Game {
       GAME_CONFIG.MAX_SPEED,
       this.speed + GAME_CONFIG.SPEED_INCREASE * delta
     );
-    // Debug rabbit-cam: pin the player's speed to a slower constant
-    // so the world scrolls at a comfortable observation pace and the
-    // rabbit's AI runs the same procedural map.
-    if (this._debugRabbitCam) this.speed = 18;
+    // Debug rabbit-cam: FREEZE the player. Speed = 0 stops the world
+    // scroll AND the player's distance counter (HUD). The rabbit gets
+    // its own constant pace via env.playerSpeed (see _update env block)
+    // and runs through the now-static world while we observe.
+    if (this._debugRabbitCam) this.speed = 0;
 
     // Apply post-ramp speed boost (multiplier on top of base speed)
     let effectiveSpeed = this.speed;
@@ -6157,25 +6175,8 @@ export class Game {
     this.camera.position.set(cx, cy, cz);
     this.camera.lookAt(camLook);
 
-    // Debug rabbit-cam override: focus the camera on the rabbit's
-    // current screen position so we can analyze its AI without the
-    // player's pose interfering. Toggle from DevTools:
-    //   game._debugRabbitCam = true
-    if (this._debugRabbitCam && this.rabbit && this.rabbit.group) {
-      const r = this.rabbit.group.position;
-      // Match the player-cam framing: 12 units behind (in screen-Z
-      // sense), 8 above, looking 20 ahead. Replaces the existing
-      // camera position entirely.
-      this.camera.position.set(r.x, r.y + 8, r.z - 12);
-      this.camera.lookAt(r.x, r.y + 2, r.z + 20);
-      // Hide the penguin mesh so it doesn't block the view of the
-      // rabbit's AI. Restored automatically when the flag flips off
-      // (next non-debug frame the visibility is reset).
-      if (this.player) this.player.visible = false;
-    } else if (this.player && !this.player.visible) {
-      // Restore visibility when debug is turned off mid-game.
-      this.player.visible = true;
-    }
+    // (Debug rabbit-cam override moved to _loop so it fires every
+    // frame regardless of state.)
 
     // Duck
     if (this.isDucking) {

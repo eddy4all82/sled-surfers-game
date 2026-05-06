@@ -433,7 +433,13 @@ export class Rabbit {
 
     // ── 8. Render position + tilt + ear flap
     this.group.position.y = this._hopY;
-    this.group.position.z = -(this.distance - playerDistance);
+    // Screen-Z convention: world is rendered with the player at z=0
+    // and obstacles ahead at +z (camera looks +z toward lookAt z=+20).
+    // So the rabbit's screen-Z must be POSITIVE when it's ahead in
+    // the race (further along the course) and NEGATIVE (off-camera
+    // behind) when it's lagging. distance - playerDistance gives
+    // exactly that.
+    this.group.position.z = (this.distance - playerDistance);
     const tilt = Math.atan2(this._hopVel, speed + 1) * 0.5;
     this.group.rotation.x = -tilt;
     if (this._earL && this._earR) {
