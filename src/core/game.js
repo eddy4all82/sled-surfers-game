@@ -4769,6 +4769,9 @@ export class Game {
 
   _die(position, hitType, title) {
     if (this.state !== 'playing') return;
+    // Debug mode: rabbit-cam analysis. Player invincible — ignore all
+    // collision deaths so the round runs indefinitely.
+    if (this._debugRabbitCam) return;
     this._pendingGameOverTitle = title || 'CRASHED!';
     // bgMusic keeps playing during the crash impact sound. The death-cam
     // audio sequence (stop SFX, stop bgMusic, play death_cam stinger)
@@ -5692,6 +5695,9 @@ export class Game {
 
   _handleSwipe(direction) {
     if (this.state !== 'playing') return;
+    // Debug rabbit-cam: ignore all jumps/ducks so the player just
+    // coasts forward and we can study the rabbit's AI cleanly.
+    if (this._debugRabbitCam) return;
 
     // Horizontal motion is now continuous; only up/down still come through here.
     switch (direction) {
@@ -5870,7 +5876,9 @@ export class Game {
       this._playerXMomentum = 0;
     } else {
       // Apply input as force to momentum (increased gain for responsiveness)
-      if (this.input && this.input.horizontalAxis) {
+      // Debug rabbit-cam: ignore the horizontal axis so the player
+      // doesn't drift laterally while we're watching the rabbit.
+      if (this.input && this.input.horizontalAxis && !this._debugRabbitCam) {
         const inputForce = this.input.horizontalAxis * GAME_CONFIG.HORIZONTAL_SPEED * delta;
         this._playerXMomentum += inputForce;
       }
@@ -6144,6 +6152,18 @@ export class Game {
     }
     this.camera.position.set(cx, cy, cz);
     this.camera.lookAt(camLook);
+
+    // Debug rabbit-cam override: focus the camera on the rabbit's
+    // current screen position so we can analyze its AI without the
+    // player's pose interfering. Toggle from DevTools:
+    //   game._debugRabbitCam = true
+    if (this._debugRabbitCam && this.rabbit && this.rabbit.group) {
+      const r = this.rabbit.group.position;
+      // Pull the cam ~3m back behind the rabbit (z is "screen Z";
+      // negative is forward). Slightly above and looking ahead.
+      this.camera.position.set(r.x, r.y + 6, r.z - 9);
+      this.camera.lookAt(r.x, r.y + 1.0, r.z + 4);
+    }
 
     // Duck
     if (this.isDucking) {
