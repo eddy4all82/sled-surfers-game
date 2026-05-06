@@ -65,10 +65,12 @@ export class Rabbit {
 
     this._hopY = 0;
     this._hopVel = 0;
+    this._hopGravity = JANA_BUNNY.HOP_GRAVITY;  // per-hop gravity, set in _startHop
     this._inHop = false;
     this._lastPeak = JANA_BUNNY.HOP_PEAK_LOW;
     this._settleT = 0;                  // brief settle window after a MEGA landing
     this._megaCooldownT = 0;            // seconds until MEGA is available again
+    this._mediumDecayLeft = 0;          // hops remaining in post-MEDIUM decay
     this._dead = false;                 // set once a fatal collision fires
     // Diagnostics: enable from DevTools via `window.__game.rabbit._debug = true`
     // Logs the threat being collided with each time the bbox check fires,
@@ -92,10 +94,12 @@ export class Rabbit {
     this.distance = 0;
     this._hopY = 0;
     this._hopVel = 0;
+    this._hopGravity = JANA_BUNNY.HOP_GRAVITY;
     this._inHop = false;
     this._penaltyT = 0;
     this._settleT = 0;
     this._megaCooldownT = 0;
+    this._mediumDecayLeft = 0;
     this._dead = false;
 
     const root = new THREE.Group();
@@ -322,7 +326,7 @@ export class Rabbit {
     if (this._settleT > 0) this._settleT = Math.max(0, this._settleT - delta);
     if (!this._inHop && this._settleT <= 0) this._startHop(threats, speed);
     if (this._inHop) {
-      this._hopVel -= JANA_BUNNY.HOP_GRAVITY * delta;
+      this._hopVel -= this._hopGravity * delta;
       this._hopY   += this._hopVel * delta;
       if (this._hopY <= 0) {
         this._hopY = 0;
@@ -604,21 +608,24 @@ export class Rabbit {
   // ─────────────────────────────────────────────────────────────
 
   /**
-   * Pick the next hop's peak height. Only TWO modes:
-   *   • SMALL — variable: HOP_PEAK_LOW (running) or HOP_PEAK_OBSTACLE
-   *             (about to clear a low car/rock in this lane).
-   *   • MEGA  — used EXCLUSIVELY when a building's leading edge is
-   *             within roughly half a mega-arc. Subject to
-   *             MEGA_COOLDOWN_SEC. After firing, locks out further
-   *             MEGAs for that cooldown window.
-   * If a building approaches and MEGA is on cooldown, the rabbit
-   * does its best with SMALL — and will collide on the building if
-   * lane-swerve to centre alone can't save it. That's the rabbit's
-   * loss condition, by design.
+   * Schedule the next hop. THREE modes — every mode shares HOP_TIME
+   * so all three cover the same horizontal distance. Per-hop gravity
+   * is derived to make peak height match while keeping time aloft
+   * constant.
+   *
+   *   • LOW    — natural running gait. Default when no threat.
+   *   • MEDIUM — clears a ground hazard (car/rock/sign) in the
+   *              current lane within a hop's forward range. After
+   *              firing, sets _mediumDecayLeft = MEDIUM_DECAY_STEPS,
+   *              so the next 2 hops decay back toward LOW instead of
+   *              snapping straight to the running gait.
+   *   • MEGA   — building tunnel threading. Uses the same HOP_TIME
+   *              so its forward range matches the others, with peak
+   *              just much higher. Subject to MEGA_COOLDOWN_SEC.
    */
   _startHop(threats, speed) {
-    const obstacleRange = hopRange(JANA_BUNNY.HOP_PEAK_OBSTACLE, JANA_BUNNY.HOP_GRAVITY, speed);
-    const megaRange     = hopRange(JANA_BUNNY.HOP_PEAK_MEGA, JANA_BUNNY.HOP_GRAVITY, speed);
+    const T = JANA_BUNNY.HOP_TIME;
+    const hopForward = speed * T;       // forward distance per hop (same for all)
     let peak = JANA_BUNNY.HOP_PEAK_LOW;
     let nearestObstacleDist = Infinity;
     let buildingAhead = null;
@@ -626,23 +633,39 @@ export class Rabbit {
       if (t.dist <= 0) continue;
       if (t.kind === 'building') {
         const leading = t.dist - t.len / 2;
-        if (leading <= megaRange * 0.55) buildingAhead = t;
+        // Trigger MEGA when the rabbit is within a few hops of the
+        // building (so the arc apex lands inside the arch).
+        if (leading <= hopForward * 1.2) buildingAhead = t;
       } else if (t.kind === 'ground' && t.lane === this._targetLane) {
         if (t.dist < nearestObstacleDist) nearestObstacleDist = t.dist;
       }
     }
     if (buildingAhead && this._megaCooldownT <= 0) {
-      // MEGA available — fire it. Cooldown starts now.
       peak = JANA_BUNNY.HOP_PEAK_MEGA;
       this._megaCooldownT = JANA_BUNNY.MEGA_COOLDOWN_SEC;
-    } else if (nearestObstacleDist < obstacleRange) {
-      // SMALL.clear — taller running hop to step over a low car/rock.
-      peak = JANA_BUNNY.HOP_PEAK_OBSTACLE;
+      this._mediumDecayLeft = 0;        // MEGA cancels any pending decay
+    } else if (nearestObstacleDist < hopForward * 1.1) {
+      // Obstacle within reach of the next hop's forward extent → MEDIUM.
+      peak = JANA_BUNNY.HOP_PEAK_MEDIUM;
+      this._mediumDecayLeft = JANA_BUNNY.MEDIUM_DECAY_STEPS;
+    } else if (this._mediumDecayLeft > 0) {
+      // Post-MEDIUM decay: linearly blend between MEDIUM and LOW so
+      // the rabbit settles down over a couple of hops.
+      const total = JANA_BUNNY.MEDIUM_DECAY_STEPS;
+      // remaining=2 → step 1 of decay (high), remaining=1 → step 2 (lower)
+      const blend = this._mediumDecayLeft / (total + 1);
+      peak = JANA_BUNNY.HOP_PEAK_LOW
+           + blend * (JANA_BUNNY.HOP_PEAK_MEDIUM - JANA_BUNNY.HOP_PEAK_LOW);
+      this._mediumDecayLeft--;
     } else {
-      // SMALL.run — default fast bunny-hop gait.
       peak = JANA_BUNNY.HOP_PEAK_LOW;
     }
-    this._hopVel = Math.sqrt(2 * JANA_BUNNY.HOP_GRAVITY * peak);
+    // Solve for v and g so the arc reaches `peak` in time T:
+    //   v = 4 h / T,  g = 2 v / T  =  8 h / T²
+    // Forward distance D = speed × T is independent of peak — every
+    // hop covers the same horizontal span.
+    this._hopVel     = 4 * peak / T;
+    this._hopGravity = 2 * this._hopVel / T;
     this._hopY = 0.001;
     this._inHop = true;
     this._lastPeak = peak;

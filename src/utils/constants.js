@@ -85,18 +85,26 @@ export const JANA_BUNNY = {
   // if the player's live speed isn't available.
   RABBIT_SPEED_MULT:     0.98,
   RABBIT_SPEED:           28,    // Fallback world-units/sec (only if env.playerSpeed is missing)
-  // Hop modes — there are only two kinds the rabbit ever does:
-  //   • SMALL — the natural running gait. Variable peak between
-  //             RUN (0.4m, when nothing's in the way) and CLEAR (1.2m,
-  //             enough to land on top of / hop over a 1m car or rock).
-  //             No cooldown.
-  //   • MEGA  — tall jump used EXCLUSIVELY for threading mid-rise
-  //             building arches. 5-second cooldown between uses.
-  HOP_PEAK_LOW:          0.4,    // SMALL.run     — running gait (no obstacle near)
-  HOP_PEAK_OBSTACLE:     1.2,    // SMALL.clear   — clearance hop over cars/rocks
-  HOP_PEAK_MEGA:         5.5,    // MEGA          — building arch threading
-  HOP_PEAK_HIGH:         1.2,    // legacy alias for HOP_PEAK_OBSTACLE (kept for safety)
-  HOP_GRAVITY:           34,     // Custom gravity for the rabbit's arc — higher = snappier short hops
+  // Hop modes — three peaks share the SAME time aloft (HOP_TIME), so
+  // every hop covers the same forward distance regardless of height.
+  // Per-hop gravity is derived: g = 8h / T², initial v.vel = 4h / T.
+  //
+  //   • LOW    — natural running gait, default
+  //   • MEDIUM — obstacle clearance (cars/rocks/signs). Used only when
+  //              jumping OVER a ground hazard. After firing, the next
+  //              MEDIUM_DECAY_STEPS hops linearly decay back to LOW —
+  //              the rabbit settles out of the medium arc instead of
+  //              snapping straight back to running.
+  //   • MEGA   — building arch threading. 5-second cooldown.
+  HOP_TIME:              0.4,    // shared time aloft (s) — fixes forward distance
+  HOP_PEAK_LOW:          0.4,    // LOW    peak (m)
+  HOP_PEAK_MEDIUM:       2.0,    // MEDIUM peak (m) — replaces old OBSTACLE peak
+  HOP_PEAK_MEGA:         5.5,    // MEGA   peak (m)
+  // Legacy aliases — old code paths may still reference these names.
+  HOP_PEAK_OBSTACLE:     2.0,    // alias of HOP_PEAK_MEDIUM
+  HOP_PEAK_HIGH:         2.0,
+  HOP_GRAVITY:           34,     // legacy fallback (per-hop gravity now derived)
+  MEDIUM_DECAY_STEPS:    2,      // how many hops the post-MEDIUM peak decays over
   MEGA_COOLDOWN_SEC:     5.0,    // Seconds the MEGA jump is unavailable after firing
   // Rabbit body half-extents — used for "the rabbit has mass" checks.
   // The AI inflates obstacle hit-boxes by these to plan jump/swerve
@@ -106,11 +114,11 @@ export const JANA_BUNNY = {
   BODY_HALF_L:           0.48,   // half-length along Z
   // Look-ahead window: the rabbit scans this many world-units ahead
   // for upcoming obstacles each frame to plan its next hop / lane.
-  LOOKAHEAD_M:           18,
+  LOOKAHEAD_M:           30,
   // Lane swerve threshold: rabbit changes lane when current lane has
   // a blocker within this distance and another lane is clear.
-  SWERVE_LOOKAHEAD_M:    14,
-  LANE_SWITCH_RATE:      8,      // Lerp rate for lane X transitions (higher = snappier)
+  SWERVE_LOOKAHEAD_M:    25,
+  LANE_SWITCH_RATE:      12,     // Lerp rate for lane X transitions (higher = snappier)
   // Coin pickup: rabbit scoops up coins it passes while in its lane.
   COIN_PICKUP_DISTANCE:  1.6,    // World units along Z axis
   COIN_PICKUP_LANE_DX:   0.9,    // Half-width of pickup window across X (lane width is 3)
