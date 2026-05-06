@@ -5827,6 +5827,10 @@ export class Game {
       GAME_CONFIG.MAX_SPEED,
       this.speed + GAME_CONFIG.SPEED_INCREASE * delta
     );
+    // Debug rabbit-cam: pin the player's speed to a slower constant
+    // so the world scrolls at a comfortable observation pace and the
+    // rabbit's AI runs the same procedural map.
+    if (this._debugRabbitCam) this.speed = 18;
 
     // Apply post-ramp speed boost (multiplier on top of base speed)
     let effectiveSpeed = this.speed;
@@ -6159,10 +6163,18 @@ export class Game {
     //   game._debugRabbitCam = true
     if (this._debugRabbitCam && this.rabbit && this.rabbit.group) {
       const r = this.rabbit.group.position;
-      // Pull the cam ~3m back behind the rabbit (z is "screen Z";
-      // negative is forward). Slightly above and looking ahead.
-      this.camera.position.set(r.x, r.y + 6, r.z - 9);
-      this.camera.lookAt(r.x, r.y + 1.0, r.z + 4);
+      // Match the player-cam framing: 12 units behind (in screen-Z
+      // sense), 8 above, looking 20 ahead. Replaces the existing
+      // camera position entirely.
+      this.camera.position.set(r.x, r.y + 8, r.z - 12);
+      this.camera.lookAt(r.x, r.y + 2, r.z + 20);
+      // Hide the penguin mesh so it doesn't block the view of the
+      // rabbit's AI. Restored automatically when the flag flips off
+      // (next non-debug frame the visibility is reset).
+      if (this.player) this.player.visible = false;
+    } else if (this.player && !this.player.visible) {
+      // Restore visibility when debug is turned off mid-game.
+      this.player.visible = true;
     }
 
     // Duck
