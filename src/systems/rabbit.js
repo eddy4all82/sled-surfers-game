@@ -70,6 +70,12 @@ export class Rabbit {
     this._settleT = 0;                  // brief settle window after a MEGA landing
     this._megaCooldownT = 0;            // seconds until MEGA is available again
     this._dead = false;                 // set once a fatal collision fires
+    // Diagnostics: enable from DevTools via `window.__game.rabbit._debug = true`
+    // Logs the threat being collided with each time the bbox check fires,
+    // plus a per-frame nearby-threat summary so missing-threat bugs are
+    // visible in the console.
+    this._debug = false;
+    this._debugFrame = 0;
 
     this._penaltyT = 0;
     this._resolvedThreats = new WeakSet();
@@ -341,6 +347,16 @@ export class Rabbit {
     const myX = this.group.position.x;
     const proposedAdvance = speed * delta;
     const proposedDistance = this.distance + proposedAdvance;
+    // Debug: every ~30 frames, print a snapshot of nearby threats
+    // (≤20m ahead, ≤2m laterally) so we can see what the rabbit
+    // perceives. Toggle with `game.rabbit._debug = true` in DevTools.
+    if (this._debug && (this._debugFrame++ % 30 === 0)) {
+      const nearby = threats
+        .filter((t) => t.dist > -2 && t.dist < 20 && Math.abs(t.x - myX) < 4)
+        .map((t) => `${t.kind}@(dist=${t.dist.toFixed(1)},x=${t.x.toFixed(1)},h=${t.height.toFixed(1)})`);
+      // eslint-disable-next-line no-console
+      console.log(`[rabbit] d=${this.distance.toFixed(1)} x=${myX.toFixed(2)} hopY=${this._hopY.toFixed(2)} lane=${this._targetLane} | nearby:`, nearby);
+    }
     for (const t of threats) {
       // Test whether the rabbit's body box would overlap this threat
       // after the advance. Inflate threat's halves by rabbit body
@@ -639,6 +655,17 @@ export class Rabbit {
   _fatalHit(callback, threat) {
     if (this._dead) return;
     this._dead = true;
+    if (this._debug) {
+      // eslint-disable-next-line no-console
+      console.log('[rabbit] FATAL HIT:', threat ? {
+        kind:   threat.kind,
+        dist:   threat.dist?.toFixed(2),
+        x:      threat.x?.toFixed(2),
+        height: threat.height,
+        len:    threat.len,
+        width:  threat.width,
+      } : 'unknown');
+    }
     callback(threat ? threat.kind : 'unknown');
   }
 

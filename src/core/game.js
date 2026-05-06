@@ -2238,6 +2238,11 @@ export class Game {
     group.rotation.y = (x < 0 ? -1 : 1) * (Math.PI / 8) * (Math.random() - 0.5);
     group.userData.type = 'scenery';
     group.userData.biome = 'snow';
+    group.userData.kind = 'cabin';
+    group.userData.collidable = true;
+    group.userData.length = d;
+    group.userData.width  = w;
+    group.userData.height = h;
     this.scene.add(group);
     this.scenery.push(group);
   }
@@ -2309,6 +2314,11 @@ export class Game {
     group.rotation.y = Math.random() * Math.PI * 2;
     group.userData.type = 'scenery';
     group.userData.biome = 'tropical';
+    group.userData.kind = 'tiki_hut';
+    group.userData.collidable = true;
+    group.userData.length = d;
+    group.userData.width  = w;
+    group.userData.height = h + 1.6;   // include cone roof
     this.scene.add(group);
     this.scenery.push(group);
   }
@@ -2368,6 +2378,11 @@ export class Game {
     group.position.set(x, 0, z);
     group.userData.type = 'scenery';
     group.userData.biome = 'city';
+    group.userData.kind = 'building_basic';
+    group.userData.collidable = true;
+    group.userData.length = depth;
+    group.userData.width  = width;
+    group.userData.height = height;
     this.scene.add(group);
     this.scenery.push(group);
   }
@@ -2448,6 +2463,11 @@ export class Game {
     group.position.set(x, 0, z);
     group.userData.type = 'scenery';
     group.userData.biome = 'snow';
+    group.userData.kind = 'snow_shop';
+    group.userData.collidable = true;
+    group.userData.length = d;
+    group.userData.width  = w;
+    group.userData.height = h;
     this.scene.add(group);
     this.scenery.push(group);
   }
@@ -2498,6 +2518,11 @@ export class Game {
     group.position.set(x, 0, z);
     group.userData.type = 'scenery';
     group.userData.biome = 'snow';
+    group.userData.kind = 'snow_tall_building';
+    group.userData.collidable = true;
+    group.userData.length = d;
+    group.userData.width  = w;
+    group.userData.height = h;
     this.scene.add(group);
     this.scenery.push(group);
   }
@@ -2582,6 +2607,11 @@ export class Game {
     group.position.set(x, 0, z);
     group.userData.type = 'scenery';
     group.userData.biome = 'city';
+    group.userData.kind = 'skyscraper';
+    group.userData.collidable = true;
+    group.userData.length = d;
+    group.userData.width  = w;
+    group.userData.height = h;
     this.scene.add(group);
     this.scenery.push(group);
     return group;
@@ -2630,6 +2660,11 @@ export class Game {
     group.position.set(x, 0, z);
     group.userData.type = 'scenery';
     group.userData.biome = 'city';
+    group.userData.kind = 'city_midrise';
+    group.userData.collidable = true;
+    group.userData.length = d;
+    group.userData.width  = w;
+    group.userData.height = h;
     this.scene.add(group);
     this.scenery.push(group);
   }
@@ -2677,6 +2712,11 @@ export class Game {
     group.position.set(x, 0, z);
     group.userData.type = 'scenery';
     group.userData.biome = 'city';
+    group.userData.kind = 'planter';
+    group.userData.collidable = true;
+    group.userData.length = 0.6;
+    group.userData.width  = 1.4;
+    group.userData.height = 0.9;     // low; potentially hoppable
     this.scene.add(group);
     this.scenery.push(group);
   }
@@ -2730,6 +2770,11 @@ export class Game {
     group.position.set(x, 0, z);
     group.userData.type = 'scenery';
     group.userData.biome = 'tropical';
+    group.userData.kind = 'tropical_midrise';
+    group.userData.collidable = true;
+    group.userData.length = d;
+    group.userData.width  = w;
+    group.userData.height = h;
     this.scene.add(group);
     this.scenery.push(group);
   }
@@ -2767,6 +2812,11 @@ export class Game {
     group.position.set(x, 0, z);
     group.userData.type = 'scenery';
     group.userData.biome = 'tropical';
+    group.userData.kind = 'cliff_wall';
+    group.userData.collidable = true;
+    group.userData.length = 12;
+    group.userData.width  = 5;
+    group.userData.height = 12;
     this.scene.add(group);
     this.scenery.push(group);
   }

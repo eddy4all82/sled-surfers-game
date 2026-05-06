@@ -11,4 +11,7 @@ import { Game } from './core/game.js';
 window.addEventListener('DOMContentLoaded', () => {
   const game = new Game();
   game.init();
+  // Expose for DevTools-driven debugging (e.g. `game.rabbit._debug = true`).
+  // Has no game-side effect; just a handle.
+  window.game = game;
 });
