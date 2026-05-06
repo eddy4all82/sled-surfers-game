@@ -5791,6 +5791,8 @@ export class Game {
         scenery:        this.scenery,           // trees, lamps, signs, cabins (collidable subset)
         buildings:      this.mountainBlocks,    // mid-rises with tunnel arches
         crossStreets:   this.crossStreets,      // perpendicular streets w/ moving cars
+        ramps:          this.ramps,             // jump ramps (centre-lane wedges)
+        drones:         this.drones,            // hovering aerial hazards
         collectibles:   this.collectibles,
         courseLength:   this.map ? this.map.courseLength : 0,
         laneWidth:      GAME_CONFIG.LANE_WIDTH,

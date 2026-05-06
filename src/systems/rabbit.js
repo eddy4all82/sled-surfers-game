@@ -274,6 +274,8 @@ export class Rabbit {
     const scenery        = env.scenery      || [];
     const buildings      = env.buildings    || [];
     const crossStreets   = env.crossStreets || [];
+    const ramps          = env.ramps        || [];
+    const drones         = env.drones       || [];
     const collectibles   = env.collectibles || [];
     const laneWidth      = env.laneWidth    || this._laneWidth;
     const playerX        = env.playerX      || 0;
@@ -287,7 +289,8 @@ export class Rabbit {
     // formula the forward-advance step uses (playerSpeed × multiplier).
     const _baseSpeedForThreats = playerSpeed * JANA_BUNNY.RABBIT_SPEED_MULT;
     const threats = this._collectThreats(
-      obstacles, scenery, buildings, crossStreets, playerDistance, _baseSpeedForThreats
+      obstacles, scenery, buildings, crossStreets, ramps, drones,
+      playerDistance, _baseSpeedForThreats
     );
 
     // The player itself is also a threat the rabbit can't penetrate.
@@ -398,11 +401,23 @@ export class Rabbit {
       }
       const halfW = t.width / 2 + bodyHalfW;
       if (Math.abs(t.x - myX) > halfW) continue;                   // lateral miss
-      // Vertical clearance for ground/player. 'wall' is never clear.
+      // Vertical clearance — depends on threat kind.
       let cleared = false;
-      if (t.kind === 'ground') cleared = (this._hopY >= t.height - 0.1);
-      else if (t.kind === 'player') cleared = (this._hopY >= t.height + 0.2);
-      else cleared = false;
+      if (t.kind === 'ground') {
+        cleared = (this._hopY >= t.height - 0.1);
+      } else if (t.kind === 'player') {
+        cleared = (this._hopY >= t.height + 0.2);
+      } else if (t.kind === 'aerial') {
+        // Drone-style: clear if rabbit body is fully below or fully
+        // above the threat's Y band.
+        const top    = this._hopY + 0.9;
+        const bottom = this._hopY;
+        const tBot = (t.y ?? 4) - (t.yHalf ?? 0.5);
+        const tTop = (t.y ?? 4) + (t.yHalf ?? 0.5);
+        cleared = (top < tBot - 0.1) || (bottom > tTop + 0.1);
+      } else {
+        cleared = false;                                            // 'wall'
+      }
       if (cleared) continue;
       if (onCollide && !this._resolvedThreats.has(t.obj)) {
         this._resolvedThreats.add(t.obj);
@@ -487,6 +502,19 @@ export class Rabbit {
     if (Math.abs(t.x - myX) > halfW) return true;
     if (t.kind === 'wall') return false;            // tall scenery — must swerve
     if (t.kind === 'player') return hopY >= t.height + 0.2;
+    if (t.kind === 'aerial') {
+      // Drones / sky hazards: pass safely if the rabbit's BODY (with
+      // its height ~0.9m above hopY) is entirely below the threat's
+      // Y band, OR entirely above it. Otherwise lateral overlap means
+      // collision.
+      const rabbitBodyTop    = hopY + 0.9;
+      const rabbitBodyBottom = hopY;
+      const threatBottom = (t.y ?? 4) - (t.yHalf ?? 0.5);
+      const threatTop    = (t.y ?? 4) + (t.yHalf ?? 0.5);
+      if (rabbitBodyTop < threatBottom - 0.1) return true;  // rabbit safely below
+      if (rabbitBodyBottom > threatTop + 0.1) return true;  // safely above
+      return false;                                          // overlapping Y bands = unsafe
+    }
     // 'ground' — cleared if hop arc puts us above the top.
     return hopY >= t.height - 0.1;
   }
@@ -495,7 +523,7 @@ export class Rabbit {
   // Threat collection
   // ─────────────────────────────────────────────────────────────
 
-  _collectThreats(obstacles, scenery, buildings, crossStreets, playerDistance, rabbitSpeed) {
+  _collectThreats(obstacles, scenery, buildings, crossStreets, ramps, drones, playerDistance, rabbitSpeed) {
     const out = [];
     for (const o of obstacles) {
       if (!o.userData) continue;
@@ -586,6 +614,47 @@ export class Rabbit {
         });
       }
     }
+    // Ramps — centre-lane wedges (lane 0 in this game). Treated as a
+    // 'ground' threat so the lane planner avoids the centre lane near
+    // them and the rabbit either swerves OR uses MEDIUM. Ramp height
+    // is set just above MEDIUM peak so the rabbit slightly prefers
+    // swerving but can MEDIUM-clear if it has to.
+    for (const r of ramps) {
+      if (!r || !r.userData) continue;
+      const d = playerDistance + r.position.z - this.distance;
+      out.push({
+        obj: r,
+        dist: d,
+        x: r.position.x ?? 0,
+        lane: this._laneFor(r),
+        kind: 'ground',
+        height: 2.2,
+        len: r.userData.length ?? 10,
+        width: 3.0,
+      });
+    }
+    // Drones — hovering aerial threats at Y=3-8m. Use an 'aerial' kind
+    // so _canClear knows the rabbit's body must miss the drone's Y
+    // band entirely (not just clear its top — the drone is ABOVE the
+    // ground, so the rabbit can also pass UNDER it). Lateral motion
+    // is sine-wave so we just use the current X (cheap; drones don't
+    // travel far).
+    for (const d of drones) {
+      if (!d) continue;
+      const dist = playerDistance + d.position.z - this.distance;
+      out.push({
+        obj: d,
+        dist,
+        x: d.position.x,
+        lane: Math.round((d.position.x ?? 0) / this._laneWidth),
+        kind: 'aerial',
+        y: d.position.y,           // drone centre Y
+        yHalf: 0.55,               // half the drone body height
+        height: d.position.y + 0.55,  // top, used by lane-planner score only
+        len: 1.4,
+        width: 1.4,
+      });
+    }
     return out;
   }
 
@@ -625,6 +694,13 @@ export class Rabbit {
         const idx = t.lane + 1;
         const closeness = 1 - Math.min(1, t.dist / window);
         if (idx >= 0 && idx <= 2) score[idx] += 4 * closeness;
+      } else if (t.kind === 'aerial') {
+        // Drones / sky hazards: only matter when MEGA might be queued
+        // (peak 5.5m crosses drone Y range). Keep the cost light so
+        // the rabbit doesn't waste lane changes on every floating
+        // drone — building MEGA priority overrides this anyway.
+        const idx = t.lane + 1;
+        if (idx >= 0 && idx <= 2) score[idx] += 0.6;
       }
     }
     // Coins pull the rabbit slightly toward their lane (small bonus).
