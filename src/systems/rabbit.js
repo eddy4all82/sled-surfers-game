@@ -66,6 +66,10 @@ export class Rabbit {
     this._hopY = 0;
     this._hopVel = 0;
     this._hopGravity = JANA_BUNNY.HOP_GRAVITY;  // per-hop gravity, set in _startHop
+    this._hopElapsed = 0;               // seconds elapsed in current hop
+    this._hopStartX = 0;                // rabbit X at start of current hop
+    this._hopTargetX = 0;               // rabbit X at landing (lane committed for this hop)
+    this._hopLaneTarget = 0;            // lane index the hop will land in
     this._inHop = false;
     this._lastPeak = JANA_BUNNY.HOP_PEAK_LOW;
     this._settleT = 0;                  // brief settle window after a MEGA landing
@@ -304,34 +308,30 @@ export class Rabbit {
     // ── 3. Lane planning
     this._planLane(threats, collectibles, playerDistance);
 
-    // ── 4. Lane X interpolation — but ALSO blocked by the same
-    //       threats that block forward distance, so the mesh can't
-    //       slide laterally through an obstacle while the distance
-    //       clamp is holding.
-    const targetX = this._targetLane * laneWidth;
-    const currentX = this.group.position.x;
-    const k = JANA_BUNNY.LANE_SWITCH_RATE;
-    let proposedX = currentX + (targetX - currentX) * Math.min(1, k * delta);
-    proposedX = this._clampLateralX(currentX, proposedX, threats);
-    this.group.position.x = proposedX;
-    if (Math.abs(this.group.position.x - targetX) < 0.05) {
-      this.lane = this._targetLane;
-      this.group.position.x = targetX;
-    }
-
-    // ── 5. Hop arc — schedule new hop when grounded.
-    //       After a MEGA landing, hold a tiny settle window so the
-    //       transition back to running hops doesn't read as instant
-    //       bouncing.
+    // ── 4. Hop scheduling + arc + lane swerve.
+    //       Lane changes are now HOP-LOCKED: the rabbit can shift at
+    //       most 1 lane per hop, and the lateral motion happens
+    //       DURING the hop arc (start lane → landing lane). Grounded
+    //       between hops, X is pinned to the current lane.
     if (this._settleT > 0) this._settleT = Math.max(0, this._settleT - delta);
-    if (!this._inHop && this._settleT <= 0) this._startHop(threats, speed);
+    if (!this._inHop && this._settleT <= 0) this._startHop(threats, speed, laneWidth);
     if (this._inHop) {
+      this._hopElapsed += delta;
       this._hopVel -= this._hopGravity * delta;
       this._hopY   += this._hopVel * delta;
+      // X follows a smooth-step from start lane to landing lane over
+      // the hop's full duration.
+      const tProgress = Math.min(1, this._hopElapsed / JANA_BUNNY.HOP_TIME);
+      const tSmooth   = tProgress * tProgress * (3 - 2 * tProgress);
+      this.group.position.x = this._hopStartX
+        + (this._hopTargetX - this._hopStartX) * tSmooth;
       if (this._hopY <= 0) {
         this._hopY = 0;
         this._hopVel = 0;
         this._inHop = false;
+        // Commit the lane change.
+        this.lane = this._hopLaneTarget;
+        this.group.position.x = this._hopTargetX;
         // If the hop we just finished was a MEGA, give the rabbit a
         // brief grounded settle (~0.18s) before launching into rapid
         // running hops. Avoids the abrupt "land + ricochet" feel.
@@ -339,6 +339,9 @@ export class Rabbit {
           this._settleT = 0.18;
         }
       }
+    } else {
+      // Grounded — pin X to current lane (no continuous slide).
+      this.group.position.x = this.lane * laneWidth;
     }
 
     // ── 6. HARD PHYSICS — bounding-box collision check using the
@@ -623,9 +626,21 @@ export class Rabbit {
    *              so its forward range matches the others, with peak
    *              just much higher. Subject to MEGA_COOLDOWN_SEC.
    */
-  _startHop(threats, speed) {
+  _startHop(threats, speed, laneWidth) {
     const T = JANA_BUNNY.HOP_TIME;
     const hopForward = speed * T;       // forward distance per hop (same for all)
+    // Lane planner picks the IDEAL lane (could be ±2 from current);
+    // a single hop can only step 1 lane laterally, so clamp the
+    // landing lane to current ±1.
+    const goal = this._targetLane;
+    const cur  = this.lane;
+    let landingLane = cur;
+    if (goal > cur) landingLane = cur + 1;
+    else if (goal < cur) landingLane = cur - 1;
+    this._hopStartX     = cur * (laneWidth || this._laneWidth);
+    this._hopTargetX    = landingLane * (laneWidth || this._laneWidth);
+    this._hopLaneTarget = landingLane;
+    this._hopElapsed    = 0;
     let peak = JANA_BUNNY.HOP_PEAK_LOW;
     let nearestObstacleDist = Infinity;
     let buildingAhead = null;
@@ -636,7 +651,9 @@ export class Rabbit {
         // Trigger MEGA when the rabbit is within a few hops of the
         // building (so the arc apex lands inside the arch).
         if (leading <= hopForward * 1.2) buildingAhead = t;
-      } else if (t.kind === 'ground' && t.lane === this._targetLane) {
+      } else if (t.kind === 'ground' && t.lane === landingLane) {
+        // Use LANDING lane — the rabbit will be there at hop's end,
+        // not at the planner's distant goal.
         if (t.dist < nearestObstacleDist) nearestObstacleDist = t.dist;
       }
     }
