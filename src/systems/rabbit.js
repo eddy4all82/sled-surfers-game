@@ -48,10 +48,14 @@
 import * as THREE from 'three';
 import { JANA_BUNNY } from '../utils/constants.js';
 
-// Forward distance covered by a hop with the given peak (h) and gravity (g)
-// at speed (v).  D = v * 2*sqrt(2h/g).  Used for hop range planning.
-function hopRange(peak, gravity, speed) {
-  return speed * 2 * Math.sqrt(2 * peak / gravity);
+const RABBIT_X_MIN = -6;
+const RABBIT_X_MAX = 6;
+const RABBIT_MAX_SIDE_STEP = 2.75;
+const MEDIUM_CLEARANCE_MARGIN = 0.45;
+const MEDIUM_MAX_CLEAR_HEIGHT = 3.0;
+
+function clamp(v, min, max) {
+  return Math.max(min, Math.min(max, v));
 }
 
 export class Rabbit {
@@ -60,6 +64,7 @@ export class Rabbit {
     this.distance = 0;
     this.lane = 0;                 // start in centre — useful for first building
     this._targetLane = 0;
+    this._targetX = 0;
     this._scene = null;
     this._laneWidth = 3;
 
@@ -67,14 +72,18 @@ export class Rabbit {
     this._hopVel = 0;
     this._hopGravity = JANA_BUNNY.HOP_GRAVITY;  // per-hop gravity, set in _startHop
     this._hopElapsed = 0;               // seconds elapsed in current hop
+    this._hopDuration = JANA_BUNNY.HOP_TIME;
     this._hopStartX = 0;                // rabbit X at start of current hop
     this._hopTargetX = 0;               // rabbit X at landing (lane committed for this hop)
     this._hopLaneTarget = 0;            // lane index the hop will land in
     this._inHop = false;
     this._lastPeak = JANA_BUNNY.HOP_PEAK_LOW;
+    this._lastHopKind = 'low';
+    this._lastLandingDustPeak = 0;
     this._settleT = 0;                  // brief settle window after a MEGA landing
     this._megaCooldownT = 0;            // seconds until MEGA is available again
     this._mediumDecayLeft = 0;          // hops remaining in post-MEDIUM decay
+    this._mediumDecayPeak = JANA_BUNNY.HOP_PEAK_MEDIUM;
     this._dead = false;                 // set once a fatal collision fires
     // Diagnostics: enable from DevTools via `window.__game.rabbit._debug = true`
     // Logs the threat being collided with each time the bbox check fires,
@@ -86,25 +95,44 @@ export class Rabbit {
     this._penaltyT = 0;
     this._resolvedThreats = new WeakSet();
 
+    this._body = null;
+    this._head = null;
+    this._pawL = null;
+    this._pawR = null;
+    this._haunchL = null;
+    this._haunchR = null;
+    this._footL = null;
+    this._footR = null;
+    this._tail = null;
     this._earL = null;
     this._earR = null;
+    this._partRest = new Map();
+    this._groundShadow = null;
+    this._dustPuffs = [];
   }
 
   init(scene, { lane = 0, laneWidth = 3 } = {}) {
     this._scene = scene;
     this.lane = lane;
     this._targetLane = lane;
+    this._targetX = clamp(lane * laneWidth, RABBIT_X_MIN, RABBIT_X_MAX);
     this._laneWidth = laneWidth;
     this.distance = 0;
     this._hopY = 0;
     this._hopVel = 0;
     this._hopGravity = JANA_BUNNY.HOP_GRAVITY;
+    this._hopDuration = JANA_BUNNY.HOP_TIME;
     this._inHop = false;
     this._penaltyT = 0;
     this._settleT = 0;
     this._megaCooldownT = 0;
     this._mediumDecayLeft = 0;
+    this._mediumDecayPeak = JANA_BUNNY.HOP_PEAK_MEDIUM;
+    this._lastHopKind = 'low';
+    this._lastLandingDustPeak = 0;
     this._dead = false;
+    this._partRest.clear();
+    this._dustPuffs = [];
 
     const root = new THREE.Group();
     root.userData.kind = 'rabbit';
@@ -122,6 +150,7 @@ export class Rabbit {
     body.position.set(0, 0.7, -0.05);
     body.castShadow = true;
     root.add(body);
+    this._body = body;
 
     const belly = new THREE.Mesh(new THREE.SphereGeometry(0.45, 14, 10), bellyMat);
     belly.scale.set(0.9, 0.7, 1.0);
@@ -132,6 +161,7 @@ export class Rabbit {
     head.position.set(0, 1.05, 0.55);
     head.castShadow = true;
     root.add(head);
+    this._head = head;
 
     const cheekGeo = new THREE.SphereGeometry(0.16, 10, 8);
     const cheekL = new THREE.Mesh(cheekGeo, furMat);
@@ -201,38 +231,45 @@ export class Rabbit {
     root.add(toothR);
 
     const pawGeo = new THREE.SphereGeometry(0.14, 10, 8);
-    const pawL = new THREE.Mesh(pawGeo, furMat);
-    pawL.scale.set(0.9, 0.8, 1.5);
-    pawL.position.set(-0.18, 0.25, 0.55);
-    root.add(pawL);
-    const pawR = new THREE.Mesh(pawGeo, furMat);
-    pawR.scale.set(0.9, 0.8, 1.5);
-    pawR.position.set(0.18, 0.25, 0.55);
-    root.add(pawR);
+      const pawL = new THREE.Mesh(pawGeo, furMat);
+      pawL.scale.set(0.9, 0.8, 1.5);
+      pawL.position.set(-0.18, 0.25, 0.55);
+      root.add(pawL);
+      this._pawL = pawL;
+      const pawR = new THREE.Mesh(pawGeo, furMat);
+      pawR.scale.set(0.9, 0.8, 1.5);
+      pawR.position.set(0.18, 0.25, 0.55);
+      root.add(pawR);
+      this._pawR = pawR;
 
     const haunchGeo = new THREE.SphereGeometry(0.32, 12, 10);
-    const haunchL = new THREE.Mesh(haunchGeo, furMat);
-    haunchL.scale.set(0.7, 1.0, 1.4);
-    haunchL.position.set(-0.42, 0.45, -0.25);
-    root.add(haunchL);
-    const haunchR = new THREE.Mesh(haunchGeo, furMat);
-    haunchR.scale.set(0.7, 1.0, 1.4);
-    haunchR.position.set(0.42, 0.45, -0.25);
-    root.add(haunchR);
+      const haunchL = new THREE.Mesh(haunchGeo, furMat);
+      haunchL.scale.set(0.7, 1.0, 1.4);
+      haunchL.position.set(-0.42, 0.45, -0.25);
+      root.add(haunchL);
+      this._haunchL = haunchL;
+      const haunchR = new THREE.Mesh(haunchGeo, furMat);
+      haunchR.scale.set(0.7, 1.0, 1.4);
+      haunchR.position.set(0.42, 0.45, -0.25);
+      root.add(haunchR);
+      this._haunchR = haunchR;
 
     const footGeo = new THREE.SphereGeometry(0.18, 10, 8);
-    const footL = new THREE.Mesh(footGeo, furMat);
-    footL.scale.set(1.0, 0.7, 2.0);
-    footL.position.set(-0.32, 0.18, 0.05);
-    root.add(footL);
-    const footR = new THREE.Mesh(footGeo, furMat);
-    footR.scale.set(1.0, 0.7, 2.0);
-    footR.position.set(0.32, 0.18, 0.05);
-    root.add(footR);
+      const footL = new THREE.Mesh(footGeo, furMat);
+      footL.scale.set(1.0, 0.7, 2.0);
+      footL.position.set(-0.32, 0.18, 0.05);
+      root.add(footL);
+      this._footL = footL;
+      const footR = new THREE.Mesh(footGeo, furMat);
+      footR.scale.set(1.0, 0.7, 2.0);
+      footR.position.set(0.32, 0.18, 0.05);
+      root.add(footR);
+      this._footR = footR;
 
-    const tail = new THREE.Mesh(new THREE.SphereGeometry(0.22, 12, 10), bellyMat);
-    tail.position.set(0, 0.85, -0.85);
-    root.add(tail);
+      const tail = new THREE.Mesh(new THREE.SphereGeometry(0.22, 12, 10), bellyMat);
+      tail.position.set(0, 0.85, -0.85);
+      root.add(tail);
+      this._tail = tail;
 
     const whiskerMat = new THREE.LineBasicMaterial({ color: 0xcccccc });
     const mkWhisker = (x1, y1, z1, x2, y2, z2) => {
@@ -255,11 +292,13 @@ export class Rabbit {
     // JANA_BUNNY so collisions match what's drawn.
     root.scale.setScalar(0.69);
 
-    root.position.set(lane * laneWidth, 0, 0);
-    scene.add(root);
-    this.group = root;
-    return this;
-  }
+      root.position.set(lane * laneWidth, 0, 0);
+      scene.add(root);
+      this.group = root;
+      this._captureRestPose();
+      this._createAirShadow();
+      return this;
+    }
 
   /**
    * env: { playerDistance, playerSpeed, playerX, playerY, obstacles,
@@ -314,44 +353,45 @@ export class Rabbit {
     const baseSpeed = playerSpeed * JANA_BUNNY.RABBIT_SPEED_MULT;
     const speed     = baseSpeed; // no more penalty multiplier — collisions are now fatal, not slowdowns
 
-    // ── 3. Lane planning
-    this._planLane(threats, collectibles, playerDistance);
+      // ── 3. Free-space planning. The rabbit can aim anywhere across
+      //       the playable width, while still using only LOW/MEDIUM/MEGA
+      //       hop families for vertical decisions.
+      this._planPath(threats, collectibles, playerDistance);
 
-    // ── 4. Hop scheduling + arc + lane swerve.
-    //       Lane changes are now HOP-LOCKED: the rabbit can shift at
-    //       most 1 lane per hop, and the lateral motion happens
-    //       DURING the hop arc (start lane → landing lane). Grounded
-    //       between hops, X is pinned to the current lane.
-    if (this._settleT > 0) this._settleT = Math.max(0, this._settleT - delta);
-    if (!this._inHop && this._settleT <= 0) this._startHop(threats, speed, laneWidth);
-    if (this._inHop) {
+      // ── 4. Hop scheduling + arc + free lateral aim. X motion is still
+      //       committed per hop so the rabbit reads as jumping, not
+      //       sliding sideways through hazards.
+      if (this._settleT > 0) this._settleT = Math.max(0, this._settleT - delta);
+      if (!this._inHop && this._settleT <= 0) this._startHop(threats, speed, laneWidth);
+      if (this._inHop) {
       this._hopElapsed += delta;
       this._hopVel -= this._hopGravity * delta;
       this._hopY   += this._hopVel * delta;
       // X follows a smooth-step from start lane to landing lane over
       // the hop's full duration.
-      const tProgress = Math.min(1, this._hopElapsed / JANA_BUNNY.HOP_TIME);
+        const tProgress = Math.min(1, this._hopElapsed / this._hopDuration);
       const tSmooth   = tProgress * tProgress * (3 - 2 * tProgress);
       this.group.position.x = this._hopStartX
         + (this._hopTargetX - this._hopStartX) * tSmooth;
-      if (this._hopY <= 0) {
-        this._hopY = 0;
-        this._hopVel = 0;
-        this._inHop = false;
-        // Commit the lane change.
-        this.lane = this._hopLaneTarget;
-        this.group.position.x = this._hopTargetX;
-        // If the hop we just finished was a MEGA, give the rabbit a
-        // brief grounded settle (~0.18s) before launching into rapid
+        if (this._hopY <= 0) {
+          this._hopY = 0;
+          this._hopVel = 0;
+          this._inHop = false;
+          // Commit the horizontal landing target.
+          this.lane = Math.round(this._hopTargetX / laneWidth);
+          this.group.position.x = this._hopTargetX;
+          this._spawnLandingDust(this._lastLandingDustPeak, this.group.position.x, this.group.position.z);
+          // If the hop we just finished was a MEGA, give the rabbit a
+          // brief grounded settle (~0.18s) before launching into rapid
         // running hops. Avoids the abrupt "land + ricochet" feel.
         if (this._lastPeak >= JANA_BUNNY.HOP_PEAK_MEGA - 0.01) {
           this._settleT = 0.18;
         }
+        }
+      } else {
+        // Grounded — hold the last landing spot until the next hop.
+        this.group.position.x = this._hopTargetX || this.group.position.x;
       }
-    } else {
-      // Grounded — pin X to current lane (no continuous slide).
-      this.group.position.x = this.lane * laneWidth;
-    }
 
     // ── 6. HARD PHYSICS — bounding-box collision check using the
     //       rabbit's body half-extents. Fires a FATAL collision
@@ -379,19 +419,30 @@ export class Rabbit {
       // half-extents.
       const bodyHalfL = JANA_BUNNY.BODY_HALF_L;
       const bodyHalfW = JANA_BUNNY.BODY_HALF_W;
-      const halfL = t.len / 2 + bodyHalfL;
-      // Threat's distance after rabbit advances:
-      const dAfter = t.dist - proposedAdvance;
-      if (dAfter > halfL || dAfter < -halfL) continue;            // out of Z band
+        const halfL = t.len / 2 + bodyHalfL;
+        // Threat's distance after rabbit advances:
+        const dAfter = t.dist - proposedAdvance;
+        if (dAfter > halfL || dAfter < -halfL) {
+          if (t.kind === 'building' && t.obj?.userData) t.obj.userData._rabbitInArch = false;
+          continue;            // out of Z band
+        }
       // Inflate lateral by body width.
       if (t.kind === 'building') {
         // Building special: pillars are everywhere except the central
         // arch. If we're inside the building's Z band:
-        const insideArchX = (myX - bodyHalfW >= -t.archHalfW + 0.1) &&
-                            (myX + bodyHalfW <=  t.archHalfW - 0.1);
-        const insideArchY = (this._hopY >= t.archYMin + 0.3) &&
-                            (this._hopY <= t.archYMax - 0.3);
-        if (insideArchX && insideArchY) continue;                  // threading the arch — safe
+          const insideArchX = (myX - bodyHalfW >= -t.archHalfW + 0.1) &&
+                              (myX + bodyHalfW <=  t.archHalfW - 0.1);
+          const entryArchY = (this._hopY >= t.archYMin - 0.2) &&
+                             (this._hopY <= t.archYMax + 0.5);
+          const continuingArchY = this._hopY <= t.archYMax + 0.6;
+          if (!t.obj.userData._rabbitInArch && insideArchX && entryArchY) {
+            t.obj.userData._rabbitInArch = true;
+            continue;
+          }
+          if (t.obj.userData._rabbitInArch && insideArchX && continuingArchY) {
+            if (this._hopY < t.archYMin) this._hopY = t.archYMin;
+            continue;                  // threading / running through the arch — safe
+          }
         if (onCollide && !this._resolvedThreats.has(t.obj)) {
           this._resolvedThreats.add(t.obj);
           this._fatalHit(onCollide, t);
@@ -442,12 +493,15 @@ export class Rabbit {
     this.group.position.z = (this.distance - playerDistance);
     const tilt = Math.atan2(this._hopVel, speed + 1) * 0.5;
     this.group.rotation.x = -tilt;
-    if (this._earL && this._earR) {
-      const earSwing = -tilt * 0.6;
-      this._earL.rotation.x = earSwing;
-      this._earR.rotation.x = earSwing;
+      if (this._earL && this._earR) {
+        const earSwing = -tilt * 0.6;
+        this._earL.rotation.x = earSwing;
+        this._earR.rotation.x = earSwing;
+      }
+      this._updateAnimation(delta, speed);
+      this._updateAirShadow();
+      this._updateDust(delta, playerSpeed);
     }
-  }
 
   /**
    * Lateral X clamp — refuses to slide the rabbit through a threat's
@@ -491,7 +545,7 @@ export class Rabbit {
    * if false, the rabbit's distance is clamped to just before the
    * threat's leading edge.
    */
-  _canClear(t, hopY, myX) {
+    _canClear(t, hopY, myX) {
     const bodyHalfW = JANA_BUNNY.BODY_HALF_W;
     if (t.kind === 'building') {
       // Threading the centre arch: the rabbit's BODY (not just centre
@@ -521,9 +575,27 @@ export class Rabbit {
       if (rabbitBodyBottom > threatTop + 0.1) return true;  // safely above
       return false;                                          // overlapping Y bands = unsafe
     }
-    // 'ground' — cleared if hop arc puts us above the top.
-    return hopY >= t.height - 0.1;
-  }
+      // 'ground' — cleared if hop arc puts us above the top.
+      return hopY >= t.height - 0.1;
+    }
+
+    _threatOverlapsX(t, x) {
+      const halfW = (t.width || 1) / 2 + JANA_BUNNY.BODY_HALF_W;
+      return Math.abs((t.x || 0) - x) <= halfW;
+    }
+
+    _canMediumClear(t) {
+      return t.kind === 'ground' && (t.height || 0) <= MEDIUM_MAX_CLEAR_HEIGHT;
+    }
+
+    _mediumPeakForHeight(height) {
+      const needed = (height || 0) + MEDIUM_CLEARANCE_MARGIN;
+      return clamp(
+        needed,
+        JANA_BUNNY.HOP_PEAK_LOW + 0.35,
+        MEDIUM_MAX_CLEAR_HEIGHT + MEDIUM_CLEARANCE_MARGIN
+      );
+    }
 
   // ─────────────────────────────────────────────────────────────
   // Threat collection
@@ -673,64 +745,68 @@ export class Rabbit {
   // Lane planning
   // ─────────────────────────────────────────────────────────────
 
-  _planLane(threats, collectibles, playerDistance) {
-    const window = JANA_BUNNY.SWERVE_LOOKAHEAD_M;
-    // Building override: if a building's leading edge is within ~30m,
-    // FORCE centre lane regardless of other scoring.
-    for (const t of threats) {
-      if (t.kind !== 'building') continue;
-      const leadingEdge = t.dist - t.len / 2;
-      if (leadingEdge > 0 && leadingEdge < 30) {
-        this._targetLane = 0;
-        return;
+    _planPath(threats, collectibles, playerDistance) {
+      const window = JANA_BUNNY.SWERVE_LOOKAHEAD_M;
+      const myX = this.group ? this.group.position.x : this._targetX;
+      const samples = [-6, -4.5, -3, -1.5, 0, 1.5, 3, 4.5, 6];
+
+      // Middle-opening buildings are special race moments: the smart move
+      // is to aim for the arch centre early, then let MEGA handle height.
+      for (const t of threats) {
+        if (t.kind !== 'building') continue;
+        const leadingEdge = t.dist - t.len / 2;
+        if (leadingEdge > 0 && leadingEdge < 36) {
+          this._targetX = 0;
+          this._targetLane = 0;
+          return;
+        }
       }
-    }
-    const score = [0, 0, 0]; // by laneIndex+1
-    for (const t of threats) {
-      if (t.dist <= 0 || t.dist > window) continue;
-      if (t.kind === 'wall') {
-        const idx = t.lane + 1;
-        if (idx >= 0 && idx <= 2) score[idx] += 5;
-      } else if (t.kind === 'ground') {
-        const idx = t.lane + 1;
-        if (idx >= 0 && idx <= 2) score[idx] += 1;
-      } else if (t.kind === 'player') {
-        // Rabbit prefers NOT to share a lane with the penguin —
-        // costly if very close, mild penalty further out.
-        const idx = t.lane + 1;
-        const closeness = 1 - Math.min(1, t.dist / window);
-        if (idx >= 0 && idx <= 2) score[idx] += 4 * closeness;
-      } else if (t.kind === 'aerial') {
-        // Drones / sky hazards: only matter when MEGA might be queued
-        // (peak 5.5m crosses drone Y range). Keep the cost light so
-        // the rabbit doesn't waste lane changes on every floating
-        // drone — building MEGA priority overrides this anyway.
-        const idx = t.lane + 1;
-        if (idx >= 0 && idx <= 2) score[idx] += 0.6;
+
+      let bestX = clamp(this._targetX, RABBIT_X_MIN, RABBIT_X_MAX);
+      let bestScore = Infinity;
+      for (const x of samples) {
+        let score = Math.abs(x - myX) * 0.08;
+        score += Math.abs(x) * 0.015; // tiny centre bias keeps motion tidy when all paths tie
+
+        for (const t of threats) {
+          if (t.dist <= -2 || t.dist > window) continue;
+          const proximity = 1 - Math.min(1, Math.max(0, t.dist) / window);
+          const halfW = (t.width || 1) / 2 + JANA_BUNNY.BODY_HALF_W;
+          const lateralOverlap = Math.max(0, halfW - Math.abs((t.x || 0) - x));
+          if (lateralOverlap <= 0) continue;
+
+          if (t.kind === 'ground') {
+            if (this._canMediumClear(t)) {
+              score += 0.45 + proximity * 0.85 + lateralOverlap * 0.35;
+            } else {
+              score += 30 + proximity * 25 + lateralOverlap * 6;
+            }
+          } else if (t.kind === 'wall') {
+            score += 40 + proximity * 35 + lateralOverlap * 8;
+          } else if (t.kind === 'player') {
+            score += 6 + proximity * 8 + lateralOverlap * 3;
+          } else if (t.kind === 'aerial') {
+            score += 1.5 + proximity * 2;
+          }
+        }
+
+        for (const c of collectibles) {
+          if (!c || c.userData.collected) continue;
+          const cd = (playerDistance + c.position.z) - this.distance;
+          if (cd <= 0 || cd > window) continue;
+          const coinDx = Math.abs((c.position.x ?? 0) - x);
+          if (coinDx < 1.0) score -= 0.35 * (1 - cd / window);
+        }
+
+        if (score < bestScore) {
+          bestScore = score;
+          bestX = x;
+        }
       }
+
+      this._targetX = clamp(bestX, RABBIT_X_MIN, RABBIT_X_MAX);
+      this._targetLane = Math.round(this._targetX / this._laneWidth);
     }
-    // Coins pull the rabbit slightly toward their lane (small bonus).
-    for (const c of collectibles) {
-      if (!c || c.userData.collected) continue;
-      const cd = (playerDistance + c.position.z) - this.distance;
-      if (cd <= 0 || cd > window) continue;
-      const cl = Math.round((c.position.x ?? 0) / this._laneWidth);
-      const idx = cl + 1;
-      if (idx >= 0 && idx <= 2) score[idx] -= 0.3;
-    }
-    // Pick the cheapest lane with a tiny preference for adjacency.
-    let bestLane = this._targetLane;
-    let bestScore = score[bestLane + 1] + 0; // current lane has no penalty
-    for (const tryLane of [-1, 0, 1]) {
-      const s = score[tryLane + 1]
-              + (Math.abs(tryLane - this._targetLane) > 1 ? 0.4 : 0);
-      if (s < bestScore - 0.01) {
-        bestLane = tryLane;
-        bestScore = s;
-      }
-    }
-    this._targetLane = bestLane;
-  }
 
   // ─────────────────────────────────────────────────────────────
   // Hop scheduling
@@ -752,67 +828,79 @@ export class Rabbit {
    *              so its forward range matches the others, with peak
    *              just much higher. Subject to MEGA_COOLDOWN_SEC.
    */
-  _startHop(threats, speed, laneWidth) {
-    const T = JANA_BUNNY.HOP_TIME;
-    const hopForward = speed * T;       // forward distance per hop (same for all)
-    // Lane planner picks the IDEAL lane (could be ±2 from current);
-    // a single hop can only step 1 lane laterally, so clamp the
-    // landing lane to current ±1.
-    const goal = this._targetLane;
-    const cur  = this.lane;
-    let landingLane = cur;
-    if (goal > cur) landingLane = cur + 1;
-    else if (goal < cur) landingLane = cur - 1;
-    this._hopStartX     = cur * (laneWidth || this._laneWidth);
-    this._hopTargetX    = landingLane * (laneWidth || this._laneWidth);
-    this._hopLaneTarget = landingLane;
-    this._hopElapsed    = 0;
-    let peak = JANA_BUNNY.HOP_PEAK_LOW;
-    let nearestObstacleDist = Infinity;
-    let buildingAhead = null;
-    for (const t of threats) {
-      if (t.dist <= 0) continue;
-      if (t.kind === 'building') {
-        const leading = t.dist - t.len / 2;
+    _startHop(threats, speed, laneWidth) {
+      let T = JANA_BUNNY.HOP_TIME;
+      const hopForward = speed * T;
+      const megaDuration = 0.85;
+      const megaForward = speed * megaDuration;
+      const currentX = this.group ? this.group.position.x : this._hopTargetX;
+      const targetX = clamp(this._targetX, RABBIT_X_MIN, RABBIT_X_MAX);
+      const dx = clamp(targetX - currentX, -RABBIT_MAX_SIDE_STEP, RABBIT_MAX_SIDE_STEP);
+      const landingX = clamp(currentX + dx, RABBIT_X_MIN, RABBIT_X_MAX);
+      this._hopStartX     = currentX;
+      this._hopTargetX    = landingX;
+      this._hopLaneTarget = Math.round(landingX / (laneWidth || this._laneWidth));
+      this._hopElapsed    = 0;
+      let peak = JANA_BUNNY.HOP_PEAK_LOW;
+      let hopKind = 'low';
+      let nearestObstacleDist = Infinity;
+      let nearestObstacleHeight = 0;
+      let buildingAhead = null;
+      for (const t of threats) {
+        if (t.dist <= 0) continue;
+        if (t.kind === 'building') {
+          const leading = t.dist - t.len / 2;
         // Trigger MEGA when the rabbit is within a few hops of the
         // building (so the arc apex lands inside the arch).
-        if (leading <= hopForward * 1.2) buildingAhead = t;
-      } else if (t.kind === 'ground' && t.lane === landingLane) {
-        // Use LANDING lane — the rabbit will be there at hop's end,
-        // not at the planner's distant goal.
-        if (t.dist < nearestObstacleDist) nearestObstacleDist = t.dist;
+          if (leading <= megaForward * 0.72) buildingAhead = t;
+        } else if (t.kind === 'ground' && this._threatOverlapsX(t, landingX)) {
+          if (!this._canMediumClear(t)) continue;
+          if (t.dist < nearestObstacleDist) nearestObstacleDist = t.dist;
+          nearestObstacleHeight = Math.max(nearestObstacleHeight, t.height || 0);
+        }
       }
-    }
-    if (buildingAhead && this._megaCooldownT <= 0) {
-      peak = JANA_BUNNY.HOP_PEAK_MEGA;
-      this._megaCooldownT = JANA_BUNNY.MEGA_COOLDOWN_SEC;
-      this._mediumDecayLeft = 0;        // MEGA cancels any pending decay
-    } else if (nearestObstacleDist < hopForward * 1.1) {
-      // Obstacle within reach of the next hop's forward extent → MEDIUM.
-      peak = JANA_BUNNY.HOP_PEAK_MEDIUM;
-      this._mediumDecayLeft = JANA_BUNNY.MEDIUM_DECAY_STEPS;
-    } else if (this._mediumDecayLeft > 0) {
-      // Post-MEDIUM decay: linearly blend between MEDIUM and LOW so
-      // the rabbit settles down over a couple of hops.
-      const total = JANA_BUNNY.MEDIUM_DECAY_STEPS;
-      // remaining=2 → step 1 of decay (high), remaining=1 → step 2 (lower)
-      const blend = this._mediumDecayLeft / (total + 1);
-      peak = JANA_BUNNY.HOP_PEAK_LOW
-           + blend * (JANA_BUNNY.HOP_PEAK_MEDIUM - JANA_BUNNY.HOP_PEAK_LOW);
-      this._mediumDecayLeft--;
-    } else {
-      peak = JANA_BUNNY.HOP_PEAK_LOW;
-    }
+      if (buildingAhead && this._megaCooldownT <= 0) {
+        T = megaDuration;
+        peak = JANA_BUNNY.HOP_PEAK_MEGA;
+        hopKind = 'mega';
+        this._megaCooldownT = JANA_BUNNY.MEGA_COOLDOWN_SEC;
+        this._mediumDecayLeft = 0;        // MEGA cancels any pending decay
+        this._targetX = 0;
+      } else if (nearestObstacleDist < hopForward * 1.1) {
+        // Obstacle within reach → MEDIUM, but sized to the obstacle
+        // instead of a fixed jump. It can clear up to 3m and then
+        // settles down over the next two hops.
+        peak = this._mediumPeakForHeight(nearestObstacleHeight);
+        hopKind = 'medium';
+        this._mediumDecayLeft = JANA_BUNNY.MEDIUM_DECAY_STEPS;
+        this._mediumDecayPeak = peak;
+      } else if (this._mediumDecayLeft > 0) {
+        // Post-MEDIUM decay: linearly blend between MEDIUM and LOW so
+        // the rabbit settles down over a couple of hops.
+        const total = JANA_BUNNY.MEDIUM_DECAY_STEPS;
+        // remaining=2 → step 1 of decay (high), remaining=1 → step 2 (lower)
+        const blend = this._mediumDecayLeft / (total + 1);
+        peak = JANA_BUNNY.HOP_PEAK_LOW
+             + blend * (this._mediumDecayPeak - JANA_BUNNY.HOP_PEAK_LOW);
+        hopKind = 'medium_decay';
+        this._mediumDecayLeft--;
+      } else {
+        peak = JANA_BUNNY.HOP_PEAK_LOW;
+        hopKind = 'low';
+      }
     // Solve for v and g so the arc reaches `peak` in time T:
     //   v = 4 h / T,  g = 2 v / T  =  8 h / T²
     // Forward distance D = speed × T is independent of peak — every
     // hop covers the same horizontal span.
-    this._hopVel     = 4 * peak / T;
+      this._hopDuration = T;
+      this._hopVel     = 4 * peak / T;
     this._hopGravity = 2 * this._hopVel / T;
-    this._hopY = 0.001;
-    this._inHop = true;
-    this._lastPeak = peak;
-  }
+      this._hopY = 0.001;
+      this._inHop = true;
+      this._lastPeak = peak;
+      this._lastHopKind = hopKind;
+      this._lastLandingDustPeak = peak;
+    }
 
   /**
    * Mark the rabbit as dead and notify the host. The host (game.js)
@@ -839,27 +927,199 @@ export class Rabbit {
   // Coin pickup
   // ─────────────────────────────────────────────────────────────
 
-  _scoopCoins(collectibles, playerDistance) {
-    const dx = JANA_BUNNY.COIN_PICKUP_LANE_DX;
-    const dz = JANA_BUNNY.COIN_PICKUP_DISTANCE;
-    const myX = this.group.position.x;
+    _scoopCoins(collectibles, playerDistance) {
+      const dx = JANA_BUNNY.COIN_PICKUP_LANE_DX;
+      const dz = JANA_BUNNY.COIN_PICKUP_DISTANCE;
+      const myX = this.group.position.x;
     for (const coin of collectibles) {
       if (!coin || coin.userData.collected) continue;
       const coinDist = playerDistance + coin.position.z;
       if (Math.abs(coinDist - this.distance) > dz) continue;
       if (Math.abs((coin.position.x ?? 0) - myX) > dx) continue;
       coin.userData.collected = true;
-      coin.visible = false;
+        coin.visible = false;
+      }
     }
-  }
 
-  hasFinished(courseLength) {
-    return courseLength > 0 && this.distance >= courseLength;
-  }
+    _captureRestPose() {
+      this._partRest.clear();
+      const parts = [
+        this._body, this._head, this._pawL, this._pawR, this._haunchL,
+        this._haunchR, this._footL, this._footR, this._tail,
+        this._earL, this._earR,
+      ];
+      for (const part of parts) {
+        if (!part) continue;
+        this._partRest.set(part, {
+          position: part.position.clone(),
+          rotation: part.rotation.clone(),
+        });
+      }
+    }
 
-  dispose() {
-    if (!this.group || !this._scene) return;
-    this._scene.remove(this.group);
+    _resetPart(part) {
+      const rest = this._partRest.get(part);
+      if (!part || !rest) return;
+      part.position.copy(rest.position);
+      part.rotation.copy(rest.rotation);
+    }
+
+    _updateAnimation(delta, speed) {
+      const parts = [
+        this._body, this._head, this._pawL, this._pawR, this._haunchL,
+        this._haunchR, this._footL, this._footR, this._tail,
+        this._earL, this._earR,
+      ];
+      for (const part of parts) this._resetPart(part);
+
+      const peakRatio = clamp(
+        (this._lastPeak - JANA_BUNNY.HOP_PEAK_LOW) /
+        (JANA_BUNNY.HOP_PEAK_MEGA - JANA_BUNNY.HOP_PEAK_LOW),
+        0, 1
+      );
+      const hopT = this._inHop ? clamp(this._hopElapsed / this._hopDuration, 0, 1) : 0;
+      const cycle = this._inHop
+        ? Math.sin(hopT * Math.PI)
+        : Math.sin((performance.now() * 0.001) * (8 + speed * 0.05)) * 0.25;
+      const tuck = this._inHop ? Math.sin(hopT * Math.PI) : 0;
+      const push = this._inHop ? Math.sin(hopT * Math.PI * 2) : 0;
+      const landing = (!this._inHop && this._lastLandingDustPeak > JANA_BUNNY.HOP_PEAK_LOW)
+        ? clamp(this._settleT / 0.18, 0, 1) : 0;
+
+      if (this._body) {
+        this._body.rotation.x += -0.18 * push - 0.22 * peakRatio * tuck;
+        this._body.position.y += 0.06 * tuck - 0.08 * landing;
+      }
+      if (this._head) {
+        this._head.rotation.x += 0.22 * push - 0.18 * peakRatio * tuck;
+        this._head.position.y += 0.05 * tuck - 0.04 * landing;
+      }
+      if (this._pawL && this._pawR) {
+        const pawTuck = 0.55 * tuck + 0.25 * peakRatio;
+        this._pawL.rotation.x += -pawTuck + cycle * 0.25;
+        this._pawR.rotation.x += -pawTuck - cycle * 0.25;
+        this._pawL.position.z += 0.10 * tuck;
+        this._pawR.position.z += 0.10 * tuck;
+      }
+      if (this._haunchL && this._haunchR) {
+        this._haunchL.rotation.x += 0.35 * tuck - cycle * 0.18;
+        this._haunchR.rotation.x += 0.35 * tuck + cycle * 0.18;
+      }
+      if (this._footL && this._footR) {
+        const kick = 0.65 * tuck + 0.35 * peakRatio;
+        this._footL.rotation.x += kick + cycle * 0.35;
+        this._footR.rotation.x += kick - cycle * 0.35;
+        this._footL.position.z -= 0.18 * tuck;
+        this._footR.position.z -= 0.18 * tuck;
+      }
+      if (this._tail) {
+        this._tail.rotation.x += 0.25 * push;
+        this._tail.position.y += 0.03 * tuck;
+      }
+      if (this._earL && this._earR) {
+        const earLayback = 0.45 * tuck + 0.35 * peakRatio;
+        this._earL.rotation.x += -earLayback;
+        this._earR.rotation.x += -earLayback;
+        this._earL.rotation.z += cycle * 0.08;
+        this._earR.rotation.z -= cycle * 0.08;
+      }
+    }
+
+    _createAirShadow() {
+      if (!this._scene || this._groundShadow) return;
+      const mat = new THREE.MeshBasicMaterial({
+        color: 0x1d2430,
+        transparent: true,
+        opacity: 0,
+        depthWrite: false,
+      });
+      const shadow = new THREE.Mesh(new THREE.CircleGeometry(0.75, 24), mat);
+      shadow.rotation.x = -Math.PI / 2;
+      shadow.position.y = 0.035;
+      shadow.renderOrder = 3;
+      this._scene.add(shadow);
+      this._groundShadow = shadow;
+    }
+
+    _updateAirShadow() {
+      if (!this._groundShadow || !this.group) return;
+      const height = Math.max(0, this._hopY);
+      this._groundShadow.visible = height > 0.08;
+      this._groundShadow.position.x = this.group.position.x;
+      this._groundShadow.position.z = this.group.position.z;
+      const spread = 1 + Math.min(2.2, height * 0.18);
+      this._groundShadow.scale.set(spread, spread * 0.62, 1);
+      this._groundShadow.material.opacity = clamp(0.22 - height * 0.018, 0.07, 0.22);
+    }
+
+    _spawnLandingDust(peak, x, z) {
+      if (!this._scene || peak <= JANA_BUNNY.HOP_PEAK_LOW + 0.02) return;
+      const strength = clamp(
+        (peak - JANA_BUNNY.HOP_PEAK_LOW) /
+        (JANA_BUNNY.HOP_PEAK_MEGA - JANA_BUNNY.HOP_PEAK_LOW),
+        0.12, 1
+      );
+      const count = Math.round(3 + strength * 9);
+      for (let i = 0; i < count; i++) {
+        const mat = new THREE.MeshBasicMaterial({
+          color: 0xf3f7ff,
+          transparent: true,
+          opacity: 0.42 * strength,
+          depthWrite: false,
+        });
+        const puff = new THREE.Mesh(new THREE.SphereGeometry(0.08 + strength * 0.08, 8, 6), mat);
+        const side = (i / Math.max(1, count - 1) - 0.5) * 1.4;
+        puff.position.set(x + side * (0.35 + strength), 0.08, z - 0.2 + Math.random() * 0.5);
+        puff.userData.life = 0.35 + strength * 0.25;
+        puff.userData.maxLife = puff.userData.life;
+        puff.userData.vx = side * (0.6 + strength * 0.7);
+        puff.userData.vy = 0.25 + Math.random() * 0.45 * strength;
+        puff.userData.vz = -0.8 - Math.random() * 1.0;
+        this._scene.add(puff);
+        this._dustPuffs.push(puff);
+      }
+    }
+
+    _updateDust(delta, playerSpeed) {
+      if (!this._dustPuffs.length) return;
+      for (let i = this._dustPuffs.length - 1; i >= 0; i--) {
+        const puff = this._dustPuffs[i];
+        const ud = puff.userData;
+        ud.life -= delta;
+        puff.position.x += ud.vx * delta;
+        puff.position.y += ud.vy * delta;
+        puff.position.z += (ud.vz - playerSpeed) * delta;
+        const t = clamp(ud.life / ud.maxLife, 0, 1);
+        puff.scale.setScalar(0.7 + (1 - t) * 1.4);
+        puff.material.opacity = 0.42 * t;
+        if (ud.life <= 0) {
+          this._scene.remove(puff);
+          if (puff.geometry) puff.geometry.dispose();
+          if (puff.material) puff.material.dispose();
+          this._dustPuffs.splice(i, 1);
+        }
+      }
+    }
+
+    hasFinished(courseLength) {
+      return courseLength > 0 && this.distance >= courseLength;
+    }
+
+    dispose() {
+      if (!this.group || !this._scene) return;
+      if (this._groundShadow) {
+        this._scene.remove(this._groundShadow);
+        if (this._groundShadow.geometry) this._groundShadow.geometry.dispose();
+        if (this._groundShadow.material) this._groundShadow.material.dispose();
+        this._groundShadow = null;
+      }
+      for (const puff of this._dustPuffs) {
+        this._scene.remove(puff);
+        if (puff.geometry) puff.geometry.dispose();
+        if (puff.material) puff.material.dispose();
+      }
+      this._dustPuffs = [];
+      this._scene.remove(this.group);
     this.group.traverse((o) => {
       if (o.isMesh || o.isLine) {
         if (o.geometry) o.geometry.dispose();
