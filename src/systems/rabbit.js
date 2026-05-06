@@ -273,6 +273,7 @@ export class Rabbit {
     const obstacles      = env.obstacles    || [];
     const scenery        = env.scenery      || [];
     const buildings      = env.buildings    || [];
+    const crossStreets   = env.crossStreets || [];
     const collectibles   = env.collectibles || [];
     const laneWidth      = env.laneWidth    || this._laneWidth;
     const playerX        = env.playerX      || 0;
@@ -282,7 +283,12 @@ export class Rabbit {
     // Build a unified threat set for THIS frame. Each entry has:
     //   { obj, dist, lane, kind, height, len, width, x }
     // dist = world-distance from rabbit (positive = ahead).
-    const threats = this._collectThreats(obstacles, scenery, buildings, playerDistance);
+    // Need a speed estimate for cross-traffic prediction. Use the same
+    // formula the forward-advance step uses (playerSpeed × multiplier).
+    const _baseSpeedForThreats = playerSpeed * JANA_BUNNY.RABBIT_SPEED_MULT;
+    const threats = this._collectThreats(
+      obstacles, scenery, buildings, crossStreets, playerDistance, _baseSpeedForThreats
+    );
 
     // The player itself is also a threat the rabbit can't penetrate.
     threats.push({
@@ -489,7 +495,7 @@ export class Rabbit {
   // Threat collection
   // ─────────────────────────────────────────────────────────────
 
-  _collectThreats(obstacles, scenery, buildings, playerDistance) {
+  _collectThreats(obstacles, scenery, buildings, crossStreets, playerDistance, rabbitSpeed) {
     const out = [];
     for (const o of obstacles) {
       if (!o.userData) continue;
@@ -541,6 +547,44 @@ export class Rabbit {
         archYMin:  b.userData.archYMin  ?? 3.0,
         archYMax:  b.userData.archYMax  ?? 8.0,
       });
+    }
+    // Cross-streets: cars crossing perpendicular to the rabbit's
+    // direction of travel. Each car has userData.dir (±1) and .speed
+    // (units/sec along X). Predict where each car will be at the
+    // moment the rabbit reaches the street's Z so the AI can plan
+    // around the actual collision point, not the snapshot position.
+    for (const street of crossStreets) {
+      if (!street || !street.userData || !street.userData.cars) continue;
+      const streetDist = playerDistance + street.position.z - this.distance;
+      // Skip far / passed streets. Only project while within reasonable
+      // planning range — long-distance prediction is unreliable since
+      // the cars cycle position when they leave the street.
+      if (streetDist <= -3 || streetDist > 60) continue;
+      const arrivalT = (streetDist > 0 && rabbitSpeed > 0)
+        ? streetDist / rabbitSpeed : 0;
+      for (const car of street.userData.cars) {
+        if (!car || !car.userData) continue;
+        // Mirror the engine's update: position.x -= dir * speed * dt
+        const futureX = car.position.x
+          - (car.userData.dir || 0) * (car.userData.speed || 0) * arrivalT;
+        out.push({
+          obj: car,
+          // Distance to the STREET's Z, not the car's local Z (which
+          // is just ±0.95 inside the 4-unit street depth).
+          dist: streetDist,
+          x: futureX,
+          lane: Math.round(futureX / this._laneWidth),
+          kind: 'ground',           // jumpable like static cars
+          // The car's body runs ALONG X (it was rotated 90°), so its
+          // length-in-X is its `len`-extent and its width-in-Z is
+          // small. From the rabbit's POV: Z extent is the street's
+          // depth (~1.5m car body), X extent is the car's length
+          // (~3.5m typical).
+          height: 1.4,
+          len:    1.6,                // narrow Z window
+          width:  3.6,                // wide X footprint
+        });
+      }
     }
     return out;
   }
