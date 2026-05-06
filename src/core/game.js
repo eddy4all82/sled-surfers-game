@@ -5350,14 +5350,16 @@ export class Game {
   _beginRaceCountdown() {
     this.state = 'countdown';
     this.startTime = performance.now();
-    // Spawn the rabbit at the start line in the lane next to the player.
-    // Player rides lane 0 (centre); rabbit lane -1 (left).
-    if (!this.rabbit) {
-      this.rabbit = new Rabbit().init(this.scene, {
-        lane: -1,
-        laneWidth: GAME_CONFIG.LANE_WIDTH,
-      });
-    }
+    // Always tear down any leftover rabbit from the previous round
+    // (e.g. a win-ended round didn't dispose, or restart fired in an
+    // edge case) and spawn a fresh one at the start line. Fresh rabbit
+    // = distance:0, lane:-1, _dead:false, mesh at Z=0 right beside the
+    // player so both racers visibly start at the same line.
+    if (this.rabbit) { this.rabbit.dispose(); this.rabbit = null; }
+    this.rabbit = new Rabbit().init(this.scene, {
+      lane: -1,
+      laneWidth: GAME_CONFIG.LANE_WIDTH,
+    });
     // Don't .start() the clock yet — _loop reads delta from this.clock.
     // We DO start it on GO so the first playing-frame's delta is sane.
     const overlay = document.getElementById('countdown-overlay');
@@ -6392,6 +6394,8 @@ export class Game {
     if (this.state !== 'playing') return;
     this.state = 'won';
     this._stopBgMusic();
+    // Tear down the rabbit (if any) so the next round starts clean.
+    if (this.rabbit) { this.rabbit.dispose(); this.rabbit = null; }
     this.sounds.play('win');
     if (!this._confettiSpawned) {
       this._spawnConfetti(0);  // confetti at the player's frame (z ≈ 0)
