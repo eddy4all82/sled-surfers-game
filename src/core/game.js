@@ -8,10 +8,17 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { InputManager } from './input-manager.js';
-import { GAME_CONFIG } from '../utils/constants.js';
+import { GAME_CONFIG, JANA_BUNNY } from '../utils/constants.js';
 import { generateMap, randomSeed, DEFAULT_COURSE_LENGTH } from '../systems/map-generator.js';
 import { InstancedScenery } from '../systems/instanced-scenery.js';
 import { Rabbit } from '../systems/rabbit.js';
+import {
+  COLLIDER_KIND,
+  buildCollisionWorld,
+  buildRabbitThreats,
+  canPassBuildingArch,
+  overlapsFootprint,
+} from '../systems/collision-world.js';
 import { loadSettings, saveSettings, resetSettings, DEFAULT_SETTINGS } from '../utils/settings.js';
 import { SoundLibrary, SOUND_EVENTS, EVENT_DUCK } from '../utils/sound-library.js';
 
@@ -5788,13 +5795,25 @@ export class Game {
     // so the AI can plan hops, swerve, scoop coins, and apply
     // collision penalties. Frozen during 'countdown' state.
     if (this.gameMode === 'jana_bunny' && this.rabbit && this.state === 'playing') {
-      // In debug rabbit-cam mode: the player is frozen (speed=0) but
-      // the rabbit keeps racing at its own fixed pace through the
-      // static world.
-      const rabbitPlayerSpeed = this._debugRabbitCam ? 18 : this.speed;
-      this.rabbit.update(delta, {
-        playerDistance: this.distance,
-        playerSpeed:    rabbitPlayerSpeed,
+	      // In debug rabbit-cam mode: the player is frozen (speed=0) but
+	      // the rabbit keeps racing at its own fixed pace through the
+	      // static world.
+	      const rabbitPlayerSpeed = JANA_BUNNY.RABBIT_SPEED;
+	      const rabbitThreats = buildRabbitThreats({
+	        playerDistance: this.distance,
+	        laneWidth: GAME_CONFIG.LANE_WIDTH,
+	        obstacles: this.obstacles,
+	        scenery: this.scenery,
+	        buildings: this.mountainBlocks,
+	        crossStreets: this.crossStreets,
+	        ramps: this.ramps,
+	        drones: this.drones,
+	        observerDistance: this.rabbit.distance,
+	        observerSpeed: JANA_BUNNY.RABBIT_SPEED,
+	      }, this.rabbit.distance);
+	      this.rabbit.update(delta, {
+	        playerDistance: this.distance,
+	        playerSpeed:    rabbitPlayerSpeed,
         playerX:        this.player ? this.player.position.x : 0,
         playerY:        this.playerY || 0,
         obstacles:      this.obstacles,
@@ -5802,9 +5821,10 @@ export class Game {
         buildings:      this.mountainBlocks,    // mid-rises with tunnel arches
         crossStreets:   this.crossStreets,      // perpendicular streets w/ moving cars
         ramps:          this.ramps,             // jump ramps (centre-lane wedges)
-        drones:         this.drones,            // hovering aerial hazards
-        collectibles:   this.collectibles,
-        courseLength:   this.map ? this.map.courseLength : 0,
+	        drones:         this.drones,            // hovering aerial hazards
+	        collectibles:   this.collectibles,
+	        threats:        rabbitThreats,
+	        courseLength:   this.map ? this.map.courseLength : 0,
         laneWidth:      GAME_CONFIG.LANE_WIDTH,
         // FATAL collision callback: when the rabbit's body would
         // overlap an obstacle (its AI failed), the rabbit "loses"
@@ -5831,7 +5851,14 @@ export class Game {
       this.camera.position.set(r.x, r.y + 8, r.z - 12);
       this.camera.lookAt(r.x, r.y + 2, r.z + 20);
       if (this.player) this.player.visible = false;
-    } else if (this.player && !this.player.visible) {
+    } else if (this.player && !this.player.visible && this.state === 'playing') {
+      // Only restore visibility during normal gameplay. During
+      // 'exploding' / 'gameover' / 'won' the player is INTENTIONALLY
+      // hidden by _explode() / win logic — leave it alone. Without
+      // this state guard, the death cam would re-show the penguin
+      // mid-explosion (Sprint Run accidentally worked because the
+      // override didn't run during 'exploding' until the rabbit-cam
+      // code was hoisted into _loop).
       this.player.visible = true;
     }
 
@@ -6472,8 +6499,19 @@ export class Game {
     // If the player is high enough above all ground props (cars, rocks,
     // tall lamps, ramps, ~6 m max prop height) we can skip ground checks
     // entirely. Air-time + ramp arc fly safely above everything except
-    // mountain-split high-rises and aerial hazards.
-    const aboveGround = py > 8 && !this.isJumping;
+	    // mountain-split high-rises and aerial hazards.
+	    const aboveGround = py > 8 && !this.isJumping;
+	    const collisionWorld = buildCollisionWorld({
+	      playerDistance: this.distance,
+	      laneWidth: GAME_CONFIG.LANE_WIDTH,
+	      obstacles: this.obstacles,
+	      scenery: this.scenery,
+	      buildings: this.mountainBlocks,
+	      // Player keeps dedicated systems for these special interactions.
+	      crossStreets: [],
+	      ramps: [],
+	      drones: [],
+	    });
 
     // Ramp hit — launch the player. Player is at z=0; the ramp is at
     // ramp.position.z and extends ±length/2 in Z. Trigger as soon as the
@@ -6515,17 +6553,18 @@ export class Game {
     // ONLY if the player ENTERS through the arch (i.e. is centered in the
     // arch X window AND already at the entrance floor altitude or above at
     // first contact). Otherwise they crashed into the front wall / pillar.
-    if (this.mountainBlocks) {
-      for (const block of this.mountainBlocks) {
-        if (block.userData.kind !== 'building') continue;
-        // Phase 3 perf: skip if the building's CENTER is far away. Use the
-        // building length (≈25) as the near-window so we don't skip while
-        // the player is approaching its front wall.
-        if (Math.abs(block.position.z) > NEAR_Z + 14) continue;
-        const halfL = (block.userData.length || 25) / 2;
-        const halfW = (block.userData.width  || 6) / 2;
-        const dz = block.position.z;
-        const insideZ = dz - halfL <= 0 && dz + halfL >= 0;
+	    {
+	      const buildingColliders = collisionWorld.filter((c) => c.kind === COLLIDER_KIND.BUILDING);
+	      for (const collider of buildingColliders) {
+	        const block = collider.obj;
+	        // Phase 3 perf: skip if the building's CENTER is far away. Use the
+	        // building length (≈25) as the near-window so we don't skip while
+	        // the player is approaching its front wall.
+	        if (Math.abs(collider.screenZ) > NEAR_Z + 14) continue;
+	        const halfL = (collider.length || 25) / 2;
+	        const halfW = (collider.width  || 6) / 2;
+	        const dz = collider.screenZ;
+	        const insideZ = dz - halfL <= 0 && dz + halfL >= 0;
 
         // Outside the building's Z footprint — clear the per-pass qualifier
         if (!insideZ) {
@@ -6533,45 +6572,26 @@ export class Game {
           continue;
         }
         // Above the roof? Pass freely.
-        if (py >= (block.userData.height || 28)) continue;
+	        if (py >= (collider.height || 28)) continue;
 
-        const dxAbs = Math.abs(px - block.position.x);
-        if (dxAbs >= halfW) continue;            // not in X footprint
+	        const dxAbs = Math.abs(px - collider.x);
+	        if (dxAbs >= halfW) continue;            // not in X footprint
 
-        const archHalfW = block.userData.archHalfW || 1.5;
-        const archYMin  = block.userData.archYMin  || 3.0;
-        const archYMax  = block.userData.archYMax  || 8.0;
-        const inArchX = dxAbs <= archHalfW + 0.4;
-
-        if (!block.userData._playerInArch) {
-          // First overlap with this building this pass — check entry.
-          // Must be lined up with the arch X AND at or above the entrance
-          // floor altitude. Anything else (low altitude, off-center) =
-          // crashed into the front wall / a pillar.
-          if (inArchX && py >= archYMin - 0.2) {
-            block.userData._playerInArch = true;
-          } else {
-            this._die(this.player.position, 'boulder', 'CRASHED!');
-            return;
-          }
-        }
-
-        // Already qualified — evaluate continuing safety.
-        if (inArchX && py <= archYMax + 0.5) {
-          // Snap up to the arch floor if below — landing inside the
-          // entrance places the player on the floor, not on the road.
-          if (this.playerY < archYMin) {
-            this.playerY = archYMin;
-            this.player.position.y = archYMin;
-            this.isJumping = true;
-            if (this.jumpVelocity < 0) this.jumpVelocity = 0;
-          }
-          continue;                          // safe — sliding through
-        }
-        // Drifted into a side pillar (lost X alignment) or hit the lintel.
-        this._die(this.player.position, 'boulder', 'CRASHED!');
-        return;
-      }
+	        const arch = canPassBuildingArch(collider, px, py, { stateKey: '_playerInArch' });
+	        if (arch.pass) {
+	          // Snap up to the arch floor if below — landing inside the
+	          // entrance places the player on the floor, not on the road.
+	          if (this.playerY < arch.snapY) {
+	            this.playerY = arch.snapY;
+	            this.player.position.y = arch.snapY;
+	            this.isJumping = true;
+	            if (this.jumpVelocity < 0) this.jumpVelocity = 0;
+	          }
+	          continue;                          // safe — sliding through
+	        }
+	        this._die(this.player.position, 'boulder', 'CRASHED!');
+	        return;
+	      }
     }
 
     // Cross-street traffic collision — ignored while airborne from a ramp.
@@ -6593,20 +6613,18 @@ export class Game {
     // read visually, snap playerY up to the obstacle's roof while overlapping
     // — the player rides the surface and falls back off the back.
     // A side hit (coming in below the roof minus the margin) still kills.
-    if (!this.airborneFromRamp && !aboveGround) {
-      let onTopOfSomething = false;
-      for (const obs of this.obstacles) {
-        // Phase 3 perf: cheap Z-distance early-out before any other math.
-        if (Math.abs(obs.position.z) > NEAR_Z) continue;
-        const halfL = (obs.userData.length || 2.5) / 2 + 0.6;
-        const halfW = (obs.userData.width  || 1.0) / 2 + 0.5;
-        const top   = (obs.userData.height || 1.5);
-        const dz = Math.abs(obs.position.z);
-        const dx = Math.abs(obs.position.x - px);
-        if (dz < halfL && dx < halfW) {
-          // Generous "touching the top" tolerance — also catches the player
-          // when the obstacle's height fraction is met (≥ 65 %).
-          if (py >= top - 0.6 || py >= top * 0.65) {
+	    if (!this.airborneFromRamp && !aboveGround) {
+	      let onTopOfSomething = false;
+	      const obstacleColliders = collisionWorld.filter((c) => c.source === 'vehicle' || c.source === 'obstacle');
+	      for (const collider of obstacleColliders) {
+	        const obs = collider.obj;
+	        // Phase 3 perf: cheap Z-distance early-out before any other math.
+	        if (Math.abs(collider.screenZ) > NEAR_Z) continue;
+	        const top = collider.height || 1.5;
+	        if (overlapsFootprint(collider, px, 0, 0.5, 0.6)) {
+	          // Generous "touching the top" tolerance — also catches the player
+	          // when the obstacle's height fraction is met (≥ 65 %).
+	          if (py >= top - 0.6 || py >= top * 0.65) {
             // Snap up to the surface so we visibly ride the obstacle
             if (this.playerY < top) {
               this.playerY = top;
@@ -6629,19 +6647,21 @@ export class Game {
     // Side-hit collision against COLLIDABLE scenery (trees, lamps, rocks).
     // Same Z early-out as the other ground loops. The player can clear
     // these props by jumping above their `height` minus a margin.
-    if (!this.airborneFromRamp && !aboveGround) {
-      for (const s of this.scenery) {
-        if (!s.userData.collidable) continue;
-        if (Math.abs(s.position.z) > NEAR_Z) continue;
-        const halfL = (s.userData.length || 1.0) / 2 + 0.3;
-        const halfW = (s.userData.width  || 1.0) / 2 + 0.3;
-        const top   = (s.userData.height || 2.0);
-        const dz = Math.abs(s.position.z);
-        const dx = Math.abs(s.position.x - px);
-        if (dz < halfL && dx < halfW) {
-          // Cleared the prop's top? Pass safely — sled can fly over.
-          if (py >= top - 0.4) continue;
-          const kind = s.userData.kind || 'boulder';
+	    if (!this.airborneFromRamp && !aboveGround) {
+	      const sceneryColliders = collisionWorld.filter((c) =>
+	        c.source !== 'vehicle' &&
+	        c.source !== 'obstacle' &&
+	        c.source !== 'building' &&
+	        (c.kind === COLLIDER_KIND.GROUND || c.kind === COLLIDER_KIND.WALL)
+	      );
+	      for (const collider of sceneryColliders) {
+	        const s = collider.obj;
+	        if (Math.abs(collider.screenZ) > NEAR_Z) continue;
+	        const top = collider.height || 2.0;
+	        if (overlapsFootprint(collider, px, 0, 0.3, 0.3)) {
+	          // Cleared the prop's top? Pass safely — sled can fly over.
+	          if (py >= top - 0.4) continue;
+	          const kind = s.userData.kind || 'boulder';
           this._die(this.player.position, kind, 'CRASHED!');
           return;
         }
