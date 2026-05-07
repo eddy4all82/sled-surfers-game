@@ -5913,7 +5913,7 @@ export class Game {
     // line so the viewer sees both racers waiting at the same line.
     if (this.gameMode === 'jana_bunny' && this.state === 'countdown') {
       const tSec = (performance.now() - (this._countdownStartMs || 0)) / 1000;
-      const angle = -Math.PI * 0.6 + tSec * 0.55; // slow orbit, starts behind
+      const angle = -Math.PI * 0.6 - tSec * 0.55; // slow orbit, starts behind, rotates the OPPOSITE way
       const radius = 11;
       const height = 4.5;
       // Centre between player (lane 0, X=0) and rabbit (lane -1, X=-3)
