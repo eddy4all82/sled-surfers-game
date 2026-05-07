@@ -5287,6 +5287,7 @@ export class Game {
     // ducked at 0.5 throughout the orbit; next round picks fresh.
     this._stopBgMusic();
     if (this.rabbit) { this.rabbit.dispose(); this.rabbit = null; }
+    if (this.startingLine) { this.scene.remove(this.startingLine); this.startingLine = null; }
     this._clearSkyObjects();
     if (this.airTimeEl) this.airTimeEl.classList.remove('active');
     if (this.speedLinesEl) this.speedLinesEl.classList.remove('active');
@@ -5360,16 +5361,22 @@ export class Game {
   _beginRaceCountdown() {
     this.state = 'countdown';
     this.startTime = performance.now();
+    this._countdownStartMs = performance.now();
+    this._postCountdownTransitionT = 0;     // no blend during countdown itself
     // Always tear down any leftover rabbit from the previous round
     // (e.g. a win-ended round didn't dispose, or restart fired in an
     // edge case) and spawn a fresh one at the start line. Fresh rabbit
     // = distance:0, lane:-1, _dead:false, mesh at Z=0 right beside the
     // player so both racers visibly start at the same line.
     if (this.rabbit) { this.rabbit.dispose(); this.rabbit = null; }
+    if (this.startingLine) { this.scene.remove(this.startingLine); this.startingLine = null; }
     this.rabbit = new Rabbit().init(this.scene, {
       lane: -1,
       laneWidth: GAME_CONFIG.LANE_WIDTH,
     });
+    // Visible starting-line mesh on the floor at Z=0. Scrolls back
+    // with the world after GO; auto-disposed when far behind camera.
+    this._addStartingLine();
     // Don't .start() the clock yet — _loop reads delta from this.clock.
     // We DO start it on GO so the first playing-frame's delta is sane.
     const overlay = document.getElementById('countdown-overlay');
@@ -5397,9 +5404,58 @@ export class Game {
     ];
   }
 
+  // Big white-painted strip across all 3 lanes at world Z=0 — visible
+  // marker that the player + rabbit are at the start line. Scrolls
+  // backward with the world once the race begins; disposed when it
+  // drifts too far behind the camera.
+  _addStartingLine() {
+    if (this.startingLine) {
+      this.scene.remove(this.startingLine);
+      this.startingLine = null;
+    }
+    const group = new THREE.Group();
+    const mainGeo = new THREE.PlaneGeometry(18, 1.0);
+    const mainMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+    const main = new THREE.Mesh(mainGeo, mainMat);
+    main.rotation.x = -Math.PI / 2;
+    main.position.y = 0.04;
+    group.add(main);
+    // Black-and-white checker tiles flanking the strip — racing flag motif.
+    const tileGeo = new THREE.PlaneGeometry(0.55, 0.55);
+    const blackMat = new THREE.MeshBasicMaterial({ color: 0x111111 });
+    const whiteMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+    for (let i = -8; i <= 8; i++) {
+      const isBlack = (i % 2) === 0;
+      const tileF = new THREE.Mesh(tileGeo, isBlack ? blackMat : whiteMat);
+      tileF.rotation.x = -Math.PI / 2;
+      tileF.position.set(i * 0.55, 0.045, 0.85);
+      group.add(tileF);
+      const tileB = new THREE.Mesh(tileGeo, isBlack ? whiteMat : blackMat);
+      tileB.rotation.x = -Math.PI / 2;
+      tileB.position.set(i * 0.55, 0.045, -0.85);
+      group.add(tileB);
+    }
+    group.position.set(0, 0, 0);
+    this.scene.add(group);
+    this.startingLine = group;
+  }
+
+  // Per-frame scroll for the starting-line mesh. Decays with the world
+  // and self-disposes when it leaves the camera frustum.
+  _updateStartingLine(moveZ) {
+    if (!this.startingLine) return;
+    this.startingLine.position.z -= moveZ;
+    if (this.startingLine.position.z < -25) {
+      this.scene.remove(this.startingLine);
+      this.startingLine = null;
+    }
+  }
+
   _raceGo() {
     if (this.sounds) this.sounds.play('countdown_go');
     this.state = 'playing';
+    // Trigger the orbit→follow camera blend when the race actually begins.
+    this._postCountdownTransitionT = 0.7;
     this.clock.start();
     this._playBgMusic();
     this.sounds.play('game_start');
@@ -5521,6 +5577,7 @@ export class Game {
     if (this.sounds) this.sounds.stopAllSources();
     this._stopBgMusic();
     if (this.rabbit) { this.rabbit.dispose(); this.rabbit = null; }
+    if (this.startingLine) { this.scene.remove(this.startingLine); this.startingLine = null; }
     // Full reset of round state (counters, player position, world spawns,
     // explosion debris, parachute, biome, etc.) — silent: true skips
     // the round-start coda so we don't kick off music/countdown.
@@ -5684,6 +5741,7 @@ export class Game {
     this.state = 'gameover';
     this._cancelCountdown();
     if (this.rabbit) { this.rabbit.dispose(); this.rabbit = null; }
+    if (this.startingLine) { this.scene.remove(this.startingLine); this.startingLine = null; }
     this._clearSkyObjects();
     if (this.airTimeEl) this.airTimeEl.classList.remove('active');
     if (this.speedLinesEl) this.speedLinesEl.classList.remove('active');
@@ -5841,6 +5899,52 @@ export class Game {
     }
 
     this._updateMobileJumpButton();
+
+    // Starting-line scroll: scrolls back with the world during play.
+    // Frozen during countdown (no scroll yet) and skipped if no line.
+    if (this.startingLine && this.state === 'playing') {
+      const moveZ = this.speed * delta;
+      this._updateStartingLine(moveZ);
+    }
+
+    // Jana Bunny COUNTDOWN orbit cam: while state === 'countdown'
+    // (3-2-1-GO window), the camera circles slowly around the start
+    // line so the viewer sees both racers waiting at the same line.
+    if (this.gameMode === 'jana_bunny' && this.state === 'countdown') {
+      const tSec = (performance.now() - (this._countdownStartMs || 0)) / 1000;
+      const angle = -Math.PI * 0.6 + tSec * 0.55; // slow orbit, starts behind
+      const radius = 11;
+      const height = 4.5;
+      // Centre between player (lane 0, X=0) and rabbit (lane -1, X=-3)
+      const centreX = -1.5;
+      const centreZ = 0;
+      const ox = centreX + Math.sin(angle) * radius;
+      const oz = centreZ + Math.cos(angle) * radius;
+      this.camera.position.set(ox, height, oz);
+      this.camera.lookAt(centreX, 1.2, centreZ);
+      // Cache the last orbit pose for the post-GO blend.
+      if (!this._lastOrbitPos)  this._lastOrbitPos  = new THREE.Vector3();
+      if (!this._lastOrbitLook) this._lastOrbitLook = new THREE.Vector3();
+      this._lastOrbitPos.copy(this.camera.position);
+      this._lastOrbitLook.set(centreX, 1.2, centreZ);
+    }
+
+    // Post-countdown camera blend: at GO (state→'playing'), smoothly
+    // lerp from the last orbit pose to the standard player chase-cam
+    // pose over _postCountdownTransitionT seconds.
+    if (this._postCountdownTransitionT > 0
+        && this.state === 'playing'
+        && this._lastOrbitPos && this._stdCamPos) {
+      const total = 0.7;
+      this._postCountdownTransitionT = Math.max(0, this._postCountdownTransitionT - delta);
+      const tRaw = 1 - (this._postCountdownTransitionT / total);
+      const t = Math.max(0, Math.min(1, tRaw));
+      const ts = t * t * (3 - 2 * t);
+      const blendPos  = new THREE.Vector3().lerpVectors(this._lastOrbitPos,  this._stdCamPos,  ts);
+      const blendLook = new THREE.Vector3().lerpVectors(this._lastOrbitLook, this._stdCamLook, ts);
+      this.camera.position.copy(blendPos);
+      this.camera.lookAt(blendLook);
+    }
 
     // Debug rabbit-cam: lock the camera onto the rabbit + hide the
     // penguin mesh, regardless of game state. Runs after every other
@@ -6201,6 +6305,13 @@ export class Game {
     }
     this.camera.position.set(cx, cy, cz);
     this.camera.lookAt(camLook);
+    // Snapshot the standard camera pose so _loop's countdown→follow
+    // blend has a target to lerp toward (camera.lookAt's quaternion
+    // result is hard to read back, so we store the lookAt VECTOR).
+    if (!this._stdCamPos)  this._stdCamPos  = new THREE.Vector3();
+    if (!this._stdCamLook) this._stdCamLook = new THREE.Vector3();
+    this._stdCamPos.set(cx, cy, cz);
+    this._stdCamLook.copy(camLook);
 
     // (Debug rabbit-cam override moved to _loop so it fires every
     // frame regardless of state.)
@@ -6459,6 +6570,7 @@ export class Game {
     this._stopBgMusic();
     // Tear down the rabbit (if any) so the next round starts clean.
     if (this.rabbit) { this.rabbit.dispose(); this.rabbit = null; }
+    if (this.startingLine) { this.scene.remove(this.startingLine); this.startingLine = null; }
     this.sounds.play('win');
     if (!this._confettiSpawned) {
       this._spawnConfetti(0);  // confetti at the player's frame (z ≈ 0)
