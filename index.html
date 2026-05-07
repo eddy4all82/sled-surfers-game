@@ -618,6 +618,35 @@
       background: radial-gradient(circle at 30% 30%, #fff, #b0d4f1 60%, #2d2d44);
       box-shadow: 0 0 10px rgba(255,255,255,0.6), 0 2px 4px rgba(0,0,0,0.5);
       transition: bottom 0.15s linear;
+      z-index: 2;
+    }
+    /* Jana Bunny only — second marker for the AI rabbit's progress.
+       Hidden by default; JS sets display:block in jana_bunny mode. */
+    #course-progress .rabbit-marker {
+      position: absolute;
+      left: 9px;
+      bottom: 0;
+      width: 22px;
+      height: 22px;
+      margin-bottom: -11px;
+      border-radius: 50%;
+      background: radial-gradient(circle at 30% 30%, #fff, #ffd1dd 55%, #ff6b8a);
+      box-shadow: 0 0 8px rgba(255, 159, 181, 0.7), 0 2px 4px rgba(0,0,0,0.45);
+      transition: bottom 0.15s linear;
+      display: none;
+      z-index: 1;
+    }
+    /* Rabbit-marker centre dot (eye-ish) so the two markers read different at a glance */
+    #course-progress .rabbit-marker::after {
+      content: '';
+      position: absolute;
+      width: 5px;
+      height: 5px;
+      top: 6px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #1a1a1a;
+      border-radius: 50%;
     }
     #course-progress .milestone {
       position: absolute;
@@ -1082,6 +1111,7 @@
     <div class="bar-wrap">
       <div class="bar-fill"></div>
       <div class="player-marker"></div>
+      <div class="rabbit-marker" aria-label="Rabbit position"></div>
     </div>
     <div class="start-label">START</div>
     <div class="remaining">2000m left</div>

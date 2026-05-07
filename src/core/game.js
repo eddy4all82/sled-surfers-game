@@ -181,6 +181,7 @@ export class Game {
     this.progressEl = document.getElementById('course-progress');
     this.progressFillEl = this.progressEl ? this.progressEl.querySelector('.bar-fill') : null;
     this.progressMarkerEl = this.progressEl ? this.progressEl.querySelector('.player-marker') : null;
+    this.progressRabbitMarkerEl = this.progressEl ? this.progressEl.querySelector('.rabbit-marker') : null;
     this.progressBarWrapEl = this.progressEl ? this.progressEl.querySelector('.bar-wrap') : null;
     this.progressRemainEl = this.progressEl ? this.progressEl.querySelector('.remaining') : null;
     // Win screen
@@ -6430,6 +6431,17 @@ export class Game {
     if (this.progressRemainEl) {
       const remaining = Math.max(0, Math.floor(len - this.distance));
       this.progressRemainEl.textContent = `${remaining}m left`;
+    }
+    // Jana Bunny — second marker tracking the AI rabbit's progress
+    // along the same course. Hidden in Sprint Run.
+    if (this.progressRabbitMarkerEl) {
+      if (this.gameMode === 'jana_bunny' && this.rabbit) {
+        const rPct = Math.max(0, Math.min(1, this.rabbit.distance / len));
+        this.progressRabbitMarkerEl.style.bottom = `${(rPct * 100).toFixed(1)}%`;
+        this.progressRabbitMarkerEl.style.display = 'block';
+      } else {
+        this.progressRabbitMarkerEl.style.display = 'none';
+      }
     }
 
     // Finish-line crossing — finishLineGroup.position.z drops as player advances.
