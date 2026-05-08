@@ -37,6 +37,13 @@ export class Game {
     // Game mode: 'sprint' (Sprint Run, default) or 'jana_bunny' (race vs AI rabbit).
     // Toggled on the start screen via the mode pill.
     this.gameMode = 'sprint';
+    // Sprint Run "continue" — one-shot revival per session. Set true
+    // once the player consumes their continue; cleared on PLAY AGAIN
+    // or MAIN MENU return. Jana Bunny ignores this entirely.
+    this._continueUsed = false;
+    this._continueTimer = null;          // setInterval handle for the 10s countdown
+    this._continueRemainingSec = 0;
+    this._invincibleUntil = 0;           // performance.now() ms — _die ignored before this
     this.speed = GAME_CONFIG.INITIAL_SPEED;
     this.distance = 0;
     this.score = 0;
@@ -860,6 +867,10 @@ export class Game {
       'click', startGesture(() => this.start()));
     document.getElementById('restart-btn').addEventListener(
       'click', startGesture(() => this.restart()));
+    // Sprint Run CONTINUE button — resume from the death spot.
+    const continueBtn = document.getElementById('continue-btn');
+    if (continueBtn) continueBtn.addEventListener(
+      'click', startGesture(() => this._continuePlay()));
     const winNew = document.getElementById('win-new-btn');
     const winReplay = document.getElementById('win-replay-btn');
     if (winNew) winNew.addEventListener(
@@ -4803,6 +4814,10 @@ export class Game {
     // Debug mode: rabbit-cam analysis. Player invincible — ignore all
     // collision deaths so the round runs indefinitely.
     if (this._debugRabbitCam) return;
+    // Brief post-continue invincibility window so the player isn't
+    // instantly killed again by the same obstacle they just respawned
+    // next to.
+    if (this._invincibleUntil && performance.now() < this._invincibleUntil) return;
     this._pendingGameOverTitle = title || 'CRASHED!';
     // bgMusic keeps playing during the crash impact sound. The death-cam
     // audio sequence (stop SFX, stop bgMusic, play death_cam stinger)
@@ -5322,6 +5337,85 @@ export class Game {
     document.getElementById('final-score').textContent =
       `Distance: ${Math.floor(this.distance)}m  |  Coins: ${this.coins}`;
     this.gameOverScreen.style.display = 'flex';
+    // Sprint Run only: offer a CONTINUE if the player hasn't used theirs.
+    if (this.gameMode !== 'jana_bunny' && !this._continueUsed) {
+      this._showContinueOption();
+    } else {
+      this._hideContinueOption();
+    }
+  }
+
+  // Sprint Run continue — shows the CONTINUE button + counts down 10s
+  // on its label. After 10s (or after PLAY AGAIN / MAIN MENU click)
+  // the option goes away. Only one continue is granted per session.
+  _showContinueOption() {
+    const btn = document.getElementById('continue-btn');
+    if (!btn) return;
+    btn.style.display = 'inline-block';
+    btn.disabled = false;
+    this._continueRemainingSec = 10;
+    btn.textContent = `CONTINUE (${this._continueRemainingSec})`;
+    if (this._continueTimer) clearInterval(this._continueTimer);
+    this._continueTimer = setInterval(() => {
+      this._continueRemainingSec--;
+      if (this._continueRemainingSec <= 0) {
+        this._hideContinueOption();
+        return;
+      }
+      btn.textContent = `CONTINUE (${this._continueRemainingSec})`;
+    }, 1000);
+  }
+
+  _hideContinueOption() {
+    const btn = document.getElementById('continue-btn');
+    if (btn) btn.style.display = 'none';
+    if (this._continueTimer) {
+      clearInterval(this._continueTimer);
+      this._continueTimer = null;
+    }
+  }
+
+  // Resume play from the death spot. Snaps the player back to the
+  // centre lane on the ground, pushes distance ahead by ~10m to clear
+  // the obstacle that just killed them, grants 1.5s invincibility.
+  // Marks the continue consumed so subsequent deaths go straight to
+  // permanent game over.
+  _continuePlay() {
+    if (this._continueUsed) return;
+    if (this.gameMode === 'jana_bunny') return;   // Sprint Run only
+    this._continueUsed = true;
+    this._hideContinueOption();
+    this.gameOverScreen.style.display = 'none';
+    // Restore the player mesh + state.
+    if (this.player) {
+      this.player.visible = true;
+      this.player.position.set(0, 0, 0);
+      this.player.rotation.set(0, 0, 0);
+    }
+    this.playerX = 0;
+    this.playerY = 0;
+    this._playerXMomentum = 0;
+    this._smoothPlayerX = 0;
+    this._smoothPlayerY = 0;
+    this.isJumping = false;
+    this.isDucking = false;
+    this.airborneFromRamp = false;
+    this._cleanupExplosion();
+    if (this.deathFlag) {
+      this.scene.remove(this.deathFlag);
+      this.deathFlag = null;
+    }
+    // Push past the killer obstacle so the spawn isn't a re-death.
+    this.distance += 10;
+    // 1.5s invincibility window (see _die check) just in case.
+    this._invincibleUntil = performance.now() + 1500;
+    // Restore HUD + progress bar.
+    this.hud.style.display = 'block';
+    if (this.progressEl) this.progressEl.style.display = 'block';
+    // Resume gameplay.
+    this.state = 'playing';
+    this.clock.start();
+    this._playBgMusic();
   }
 
   _spawnPlaceholderCoin(z) {
@@ -5356,6 +5450,10 @@ export class Game {
   // ─────────────────────────────────────
 
   start() {
+    // Fresh session — continue is available again.
+    this._continueUsed = false;
+    this._invincibleUntil = 0;
+    this._hideContinueOption();
     this.startScreen.style.opacity = '0';
     setTimeout(() => { this.startScreen.style.display = 'none'; }, 500);
     this.hud.style.display = 'block';
@@ -5597,6 +5695,11 @@ export class Game {
   // recentred, parachute energy refilled, etc.) so a subsequent PLAY
   // — possibly in a DIFFERENT mode — starts from a true clean slate.
   _returnToMainMenu() {
+    // Wipe continue state — the next PLAY (any mode) starts a fresh
+    // session.
+    this._continueUsed = false;
+    this._invincibleUntil = 0;
+    this._hideContinueOption();
     this._cancelCountdown();
     if (this.sounds) this.sounds.stopAllSources();
     this._stopBgMusic();
@@ -5627,6 +5730,11 @@ export class Game {
   }
 
   restart(opts = {}) {
+    // Fresh round resets the one-shot continue: PLAY AGAIN means a
+    // new attempt and continues are per-attempt.
+    this._continueUsed = false;
+    this._invincibleUntil = 0;
+    this._hideContinueOption();
     // Optionally roll a fresh seed (PLAY AGAIN). Replay button passes newSeed=false.
     if (opts.newSeed) {
       this.courseSeed = randomSeed();
