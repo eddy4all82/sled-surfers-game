@@ -4341,18 +4341,9 @@ export class Game {
       );
       group.add(puff);
     }
-    // Ground shadow disc — added as a sibling at world Y so it always lays flat.
-    const shadowMat = new THREE.MeshBasicMaterial({
-      color: 0x000000, transparent: true, opacity: 0.18, depthWrite: false,
-    });
-    const shadow = new THREE.Mesh(
-      new THREE.CircleGeometry(maxR * 1.6, 18),
-      shadowMat,
-    );
-    shadow.rotation.x = -Math.PI / 2;
-    shadow.userData.isCloudShadow = true;
-    group.userData.shadow = shadow;
-    this.scene.add(shadow);
+    // Ground shadow disabled — the dark disc on the ground was visible
+    // at the starting line (and elsewhere along the course) and looked
+    // like an unintended dirt patch. Clouds float as visuals only now.
     return group;
   }
 

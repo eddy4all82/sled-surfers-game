@@ -621,7 +621,9 @@
       z-index: 2;
     }
     /* Jana Bunny only — second marker for the AI rabbit's progress.
-       Hidden by default; JS sets display:block in jana_bunny mode. */
+       Hidden by default; JS sets display:block in jana_bunny mode.
+       Bright red so the rabbit's position reads instantly distinct
+       from the player's blue/white marker. */
     #course-progress .rabbit-marker {
       position: absolute;
       left: 9px;
@@ -630,18 +632,17 @@
       height: 22px;
       margin-bottom: -11px;
       border-radius: 50%;
-      background: radial-gradient(circle at 30% 30%, #fff, #ffd1dd 55%, #ff6b8a);
-      box-shadow: 0 0 8px rgba(255, 159, 181, 0.7), 0 2px 4px rgba(0,0,0,0.45);
+      background: radial-gradient(circle at 30% 30%, #ffe4e4, #ff5050 55%, #c01010);
+      box-shadow: 0 0 10px rgba(255, 60, 60, 0.85), 0 2px 4px rgba(0,0,0,0.5);
       transition: bottom 0.15s linear;
       display: none;
       z-index: 1;
     }
-    /* Rabbit-marker centre dot (eye-ish) so the two markers read different at a glance */
     #course-progress .rabbit-marker::after {
       content: '';
       position: absolute;
-      width: 5px;
-      height: 5px;
+      width: 4px;
+      height: 4px;
       top: 6px;
       left: 50%;
       transform: translateX(-50%);
