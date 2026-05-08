@@ -1987,19 +1987,47 @@ export class Game {
     return false;
   }
 
+  // Returns true if z is inside (or within `pad` of) any high-rise
+  // building's Z footprint. Buildings have an arch tunnel down the
+  // centre lane that the player (and the rabbit in Jana Bunny mode)
+  // must thread; we don't want cars / ramps / coins / signs spawning
+  // inside that span and blocking the path.
+  _zInsideBuilding(z, pad) {
+    if (!this.mountainBlocks) return false;
+    for (const b of this.mountainBlocks) {
+      if (!b.userData || b.userData.kind !== 'building') continue;
+      // Use startZ/endZ if present (set in _buildMountainBlocks), else
+      // fall back to position.z ± length/2.
+      let zStart, zEnd;
+      if (typeof b.userData.startZ === 'number' && typeof b.userData.endZ === 'number') {
+        zStart = b.userData.startZ;
+        zEnd   = b.userData.endZ;
+      } else {
+        const half = (b.userData.length || 30) / 2;
+        zStart = b.position.z - half;
+        zEnd   = b.position.z + half;
+      }
+      if (z > zStart - pad && z < zEnd + pad) return true;
+    }
+    return false;
+  }
+
   // Project-wide rule: NO object (building, side decor, ramp, tree, lamp,
   // car, rock, coin, sign) is allowed to land inside a cross-street's
-  // Z footprint. Every spawner uses this helper to displace its candidate
-  // Z to the nearest clean spot. Returns null if no safe Z within ±limit.
+  // Z footprint OR inside a high-rise building's tunnel span. Every
+  // spawner uses this helper to displace its candidate Z to the
+  // nearest clean spot. Returns null if no safe Z within ±limit.
   _clampToSafeZ(z, pad = 4, limit = 80) {
-    if (!this._zHasCrossStreet(z, pad)) return z;
+    const zClear = (zz) => !this._zHasCrossStreet(zz, pad)
+                        && !this._zInsideBuilding(zz, pad);
+    if (zClear(z)) return z;
     // Try forward first (the player is moving forward — closer to original
     // intended spacing reads better), then backward as fallback.
     for (let step = 4; step <= limit; step += 4) {
       const fwd = z + step;
-      if (!this._zHasCrossStreet(fwd, pad)) return fwd;
+      if (zClear(fwd)) return fwd;
       const bwd = z - step;
-      if (!this._zHasCrossStreet(bwd, pad)) return bwd;
+      if (zClear(bwd)) return bwd;
     }
     return null;
   }
@@ -2835,6 +2863,10 @@ export class Game {
   // cross-street or a ramp.
   _spawnLaneObstacle(z) {
     if (this._zHasCrossStreet(z, 5)) return false;
+    // Project-wide rule: don't drop a lane obstacle inside a high-rise
+    // building's footprint — the lane is dedicated to threading the
+    // arch tunnel. Pad by 4m so cars don't sit right at the entrance.
+    if (this._zInsideBuilding(z, 4)) return false;
     for (const ramp of this.ramps) {
       if (Math.abs(ramp.position.z - z) < 5) return false;
     }
@@ -5885,6 +5917,7 @@ export class Game {
 	        threats:        rabbitThreats,
 	        courseLength:   this.map ? this.map.courseLength : 0,
         laneWidth:      GAME_CONFIG.LANE_WIDTH,
+        ignorePlayerThreat: !!this._debugRabbitCam,
         // FATAL collision callback: when the rabbit's body would
         // overlap an obstacle (its AI failed), the rabbit "loses"
         // and the PLAYER WINS. Mirrors the player's own collision
@@ -5896,7 +5929,7 @@ export class Game {
       // player loses. The rabbit's own hard physics keeps it from
       // entering the player, so collisions fire only when the PLAYER
       // catches up and rams the rabbit.
-      this._checkRabbitKill();
+      if (!this._debugRabbitCam) this._checkRabbitKill();
     }
 
     this._updateMobileJumpButton();
@@ -5976,11 +6009,9 @@ export class Game {
       GAME_CONFIG.MAX_SPEED,
       this.speed + GAME_CONFIG.SPEED_INCREASE * delta
     );
-    // Debug rabbit-cam: FREEZE the player. Speed = 0 stops the world
-    // scroll AND the player's distance counter (HUD). The rabbit gets
-    // its own constant pace via env.playerSpeed (see _update env block)
-    // and runs through the now-static world while we observe.
-    if (this._debugRabbitCam) this.speed = 0;
+    // Debug rabbit-cam: ghost the player and let the world stream at
+    // bunny pace, so chunks/finish line keep generating around the AI.
+    if (this._debugRabbitCam) this.speed = JANA_BUNNY.RABBIT_SPEED;
 
     // Apply post-ramp speed boost (multiplier on top of base speed)
     let effectiveSpeed = this.speed;
@@ -6000,6 +6031,7 @@ export class Game {
     }
 
     // Distance
+    if (this._debugRabbitCam) effectiveSpeed = JANA_BUNNY.RABBIT_SPEED;
     const moveZ = effectiveSpeed * delta;
     this.distance += moveZ;
 
@@ -6359,8 +6391,9 @@ export class Game {
     // Smooth biome transition (color crossfade over BIOME_TRANSITION_LEN units)
     this._tickBiomeTransition();
 
-    // Collision detection
-    this._checkCollisions();
+    // Collision detection. Rabbit debug-cam ghosts the hidden player so
+    // the world can keep streaming around the bunny without ending the run.
+    if (!this._debugRabbitCam) this._checkCollisions();
 
     // Respawn objects that went behind camera
     this._recycleObjects();
