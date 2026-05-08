@@ -47,12 +47,19 @@
  */
 import * as THREE from 'three';
 import { JANA_BUNNY } from '../utils/constants.js';
+import { buildRabbitThreats } from './collision-world.js';
 
 const RABBIT_X_MIN = -6;
 const RABBIT_X_MAX = 6;
 const RABBIT_MAX_SIDE_STEP = 2.75;
 const MEDIUM_CLEARANCE_MARGIN = 0.45;
 const MEDIUM_MAX_CLEAR_HEIGHT = 3.0;
+const MEDIUM_MIN_TIME = 0.42;
+const MEDIUM_MAX_TIME = 0.9;
+const MEDIUM_LOOKAHEAD_TIME = 0.7;
+const EMERGENCY_STEP_UP_DIST = 1.8;
+const ROUTE_LOOKAHEAD_HOPS = 5;
+const ROUTE_SAMPLES = [-6, -4.5, -3, -1.5, 0, 1.5, 3, 4.5, 6];
 
 function clamp(v, min, max) {
   return Math.max(min, Math.min(max, v));
@@ -108,6 +115,7 @@ export class Rabbit {
     this._earR = null;
     this._partRest = new Map();
     this._groundShadow = null;
+    this._groundMarker = null;          // bright red ring under the rabbit (always visible)
     this._dustPuffs = [];
   }
 
@@ -297,6 +305,7 @@ export class Rabbit {
       this.group = root;
       this._captureRestPose();
       this._createAirShadow();
+      this._createGroundMarker();
       return this;
     }
 
@@ -307,8 +316,9 @@ export class Rabbit {
   update(delta, env = {}) {
     if (!this.group || this._dead) return;
     const playerDistance = env.playerDistance || 0;
-    const playerSpeed    = (typeof env.playerSpeed === 'number' && env.playerSpeed > 0)
-      ? env.playerSpeed : JANA_BUNNY.RABBIT_SPEED;
+	    const playerSpeed    = (typeof env.playerSpeed === 'number' && env.playerSpeed > 0)
+	      ? env.playerSpeed : JANA_BUNNY.RABBIT_SPEED;
+	    const rabbitRaceSpeed = JANA_BUNNY.RABBIT_SPEED;
     const obstacles      = env.obstacles    || [];
     const scenery        = env.scenery      || [];
     const buildings      = env.buildings    || [];
@@ -320,49 +330,58 @@ export class Rabbit {
     const playerX        = env.playerX      || 0;
     const playerY        = env.playerY      || 0;
     const onCollide      = typeof env.onRabbitCollide === 'function' ? env.onRabbitCollide : null;
+    const ignorePlayerThreat = !!env.ignorePlayerThreat;
 
-    // Build a unified threat set for THIS frame. Each entry has:
-    //   { obj, dist, lane, kind, height, len, width, x }
-    // dist = world-distance from rabbit (positive = ahead).
-    // Need a speed estimate for cross-traffic prediction. Use the same
-    // formula the forward-advance step uses (playerSpeed × multiplier).
-    const _baseSpeedForThreats = playerSpeed * JANA_BUNNY.RABBIT_SPEED_MULT;
-    const threats = this._collectThreats(
-      obstacles, scenery, buildings, crossStreets, ramps, drones,
-      playerDistance, _baseSpeedForThreats
-    );
+    // Build shared collision descriptors for THIS frame, then project them
+    // into rabbit-relative threats. Player and rabbit now share the same
+    // footprint/height/jumpability interpretation of world objects.
+	    const _baseSpeedForThreats = rabbitRaceSpeed;
+    const threats = env.threats || buildRabbitThreats({
+      playerDistance,
+      laneWidth,
+      obstacles,
+      scenery,
+      buildings,
+      crossStreets,
+      ramps,
+      drones,
+      observerDistance: this.distance,
+      observerSpeed: _baseSpeedForThreats,
+    }, this.distance);
 
     // The player itself is also a threat the rabbit can't penetrate.
-    threats.push({
-      obj:    { __isPlayer: true },
-      dist:   playerDistance - this.distance,
-      x:      playerX,
-      lane:   Math.round(playerX / laneWidth),
-      kind:   'player',
-      height: 1.6,         // tall enough that rabbit's HIGH hop just barely clears
-      len:    2.0,
-      width:  1.4,
-      playerY,
-    });
+    if (!ignorePlayerThreat) {
+      threats.push({
+        obj:    { __isPlayer: true },
+        dist:   playerDistance - this.distance,
+        x:      playerX,
+        lane:   Math.round(playerX / laneWidth),
+        kind:   'player',
+        height: 1.6,         // tall enough that rabbit's HIGH hop just barely clears
+        len:    2.0,
+        width:  1.4,
+        playerY,
+      });
+    }
 
     // ── 1. Cooldown / settle timers
     if (this._megaCooldownT > 0) this._megaCooldownT = Math.max(0, this._megaCooldownT - delta);
     if (this._penaltyT > 0)      this._penaltyT      = Math.max(0, this._penaltyT - delta);
 
     // ── 2. Forward speed (proposed)
-    const baseSpeed = playerSpeed * JANA_BUNNY.RABBIT_SPEED_MULT;
+	    const baseSpeed = rabbitRaceSpeed;
     const speed     = baseSpeed; // no more penalty multiplier — collisions are now fatal, not slowdowns
 
-      // ── 3. Free-space planning. The rabbit can aim anywhere across
-      //       the playable width, while still using only LOW/MEDIUM/MEGA
-      //       hop families for vertical decisions.
-      this._planPath(threats, collectibles, playerDistance);
+	    // ── 3. Free-space planning. The rabbit scores five hops ahead,
+	    //       including the swept path between start/landing X, while
+	    //       still using only LOW/MEDIUM/MEGA vertical families.
+	    this._planPath(threats, collectibles, playerDistance, speed);
 
       // ── 4. Hop scheduling + arc + free lateral aim. X motion is still
       //       committed per hop so the rabbit reads as jumping, not
       //       sliding sideways through hazards.
       if (this._settleT > 0) this._settleT = Math.max(0, this._settleT - delta);
-      if (!this._inHop && this._settleT <= 0) this._startHop(threats, speed, laneWidth);
+      if (!this._inHop && this._settleT <= 0) this._startHop(threats, collectibles, playerDistance, speed, laneWidth);
       if (this._inHop) {
       this._hopElapsed += delta;
       this._hopVel -= this._hopGravity * delta;
@@ -381,12 +400,19 @@ export class Rabbit {
           this.lane = Math.round(this._hopTargetX / laneWidth);
           this.group.position.x = this._hopTargetX;
           this._spawnLandingDust(this._lastLandingDustPeak, this.group.position.x, this.group.position.z);
-          // If the hop we just finished was a MEGA, give the rabbit a
-          // brief grounded settle (~0.18s) before launching into rapid
-        // running hops. Avoids the abrupt "land + ricochet" feel.
-        if (this._lastPeak >= JANA_BUNNY.HOP_PEAK_MEGA - 0.01) {
-          this._settleT = 0.18;
-        }
+	        // If the hop we just finished was a MEGA, give the rabbit a
+	        // brief grounded settle (~0.18s) before launching into rapid
+	        // running hops, unless a close obstacle is waiting outside
+	        // the arch and needs an immediate MEDIUM/avoid decision.
+	        if (this._lastPeak >= JANA_BUNNY.HOP_PEAK_MEGA - 0.01) {
+	          const urgentAfterArch = threats.some((t) =>
+	            t.kind === 'ground' &&
+	            t.dist > -0.5 &&
+	            t.dist < speed * MEDIUM_LOOKAHEAD_TIME &&
+	            this._threatOverlapsX(t, this.group.position.x, JANA_BUNNY.AI_SIDE_CLEARANCE)
+	          );
+	          this._settleT = urgentAfterArch ? 0 : 0.18;
+	        }
         }
       } else {
         // Grounded — hold the last landing spot until the next hop.
@@ -420,21 +446,33 @@ export class Rabbit {
       const bodyHalfL = JANA_BUNNY.BODY_HALF_L;
       const bodyHalfW = JANA_BUNNY.BODY_HALF_W;
         const halfL = t.len / 2 + bodyHalfL;
-        // Threat's distance after rabbit advances:
+        // Swept forward test: catch overlaps even when a frame crosses
+        // from just before to just after a short cross-street car band.
+        const dBefore = t.dist;
         const dAfter = t.dist - proposedAdvance;
-        if (dAfter > halfL || dAfter < -halfL) {
+        const zOverlap = Math.max(-halfL, dAfter) <= Math.min(halfL, dBefore);
+        if (!zOverlap) {
           if (t.kind === 'building' && t.obj?.userData) t.obj.userData._rabbitInArch = false;
           continue;            // out of Z band
         }
+        const collisionDistIntoFrame = dBefore > halfL
+          ? dBefore - halfL
+          : Math.max(0, dBefore);
+        const collisionOffsetSec = proposedAdvance > 0
+          ? delta * clamp(collisionDistIntoFrame / proposedAdvance, 0, 1)
+          : 0;
+        const frameOffset = delta - collisionOffsetSec;
+        const collisionHopY = this._currentHopYAtFrameOffset(frameOffset);
+        const collisionX = this._currentHopXAtFrameOffset(frameOffset);
       // Inflate lateral by body width.
       if (t.kind === 'building') {
         // Building special: pillars are everywhere except the central
         // arch. If we're inside the building's Z band:
-          const insideArchX = (myX - bodyHalfW >= -t.archHalfW + 0.1) &&
-                              (myX + bodyHalfW <=  t.archHalfW - 0.1);
-          const entryArchY = (this._hopY >= t.archYMin - 0.2) &&
-                             (this._hopY <= t.archYMax + 0.5);
-          const continuingArchY = this._hopY <= t.archYMax + 0.6;
+          const insideArchX = (collisionX - bodyHalfW >= -t.archHalfW + 0.1) &&
+                              (collisionX + bodyHalfW <=  t.archHalfW - 0.1);
+          const entryArchY = (collisionHopY >= t.archYMin - 0.2) &&
+                             (collisionHopY <= t.archYMax + 0.5);
+          const continuingArchY = collisionHopY <= t.archYMax + 0.6;
           if (!t.obj.userData._rabbitInArch && insideArchX && entryArchY) {
             t.obj.userData._rabbitInArch = true;
             continue;
@@ -443,34 +481,57 @@ export class Rabbit {
             if (this._hopY < t.archYMin) this._hopY = t.archYMin;
             continue;                  // threading / running through the arch — safe
           }
-        if (onCollide && !this._resolvedThreats.has(t.obj)) {
-          this._resolvedThreats.add(t.obj);
-          this._fatalHit(onCollide, t);
-          return;
+	      const rescueX = t.source === 'cross_traffic' ? null : this._findEmergencySafeX(t, threats, myX);
+	      if (rescueX != null) {
+	        this.group.position.x = rescueX;
+	        this._hopStartX = rescueX;
+	        this._hopTargetX = rescueX;
+	        this._targetX = rescueX;
+	        this.lane = Math.round(rescueX / laneWidth);
+	        continue;
+	      }
+	      if (onCollide && !this._resolvedThreats.has(t.obj)) {
+	        this._resolvedThreats.add(t.obj);
+	        this._fatalHit(onCollide, t);
+	        return;
         }
         continue;
       }
       const halfW = t.width / 2 + bodyHalfW;
-      if (Math.abs(t.x - myX) > halfW) continue;                   // lateral miss
+      if (Math.abs(t.x - collisionX) > halfW) continue;             // lateral miss
       // Vertical clearance — depends on threat kind.
-      let cleared = false;
-      if (t.kind === 'ground') {
-        cleared = (this._hopY >= t.height - 0.1);
-      } else if (t.kind === 'player') {
-        cleared = (this._hopY >= t.height + 0.2);
+	      let cleared = false;
+	      if (t.kind === 'ground') {
+	        cleared = (collisionHopY >= t.height - 0.1);
+	        if (!cleared && dAfter > -EMERGENCY_STEP_UP_DIST
+	            && this._canMediumClear(t) && collisionHopY >= t.height * 0.62) {
+	          this._hopY = Math.max(this._hopY, t.height);
+	          cleared = true;
+	        }
+	      } else if (t.kind === 'player') {
+	        cleared = (collisionHopY >= t.height + 0.2);
       } else if (t.kind === 'aerial') {
         // Drone-style: clear if rabbit body is fully below or fully
         // above the threat's Y band.
-        const top    = this._hopY + 0.9;
-        const bottom = this._hopY;
+        const top    = collisionHopY + 0.9;
+        const bottom = collisionHopY;
         const tBot = (t.y ?? 4) - (t.yHalf ?? 0.5);
         const tTop = (t.y ?? 4) + (t.yHalf ?? 0.5);
         cleared = (top < tBot - 0.1) || (bottom > tTop + 0.1);
-      } else {
-        cleared = false;                                            // 'wall'
-      }
-      if (cleared) continue;
-      if (onCollide && !this._resolvedThreats.has(t.obj)) {
+	      } else {
+	        cleared = false;                                            // 'wall'
+	      }
+	      if (cleared) continue;
+	      const rescueX = t.source === 'cross_traffic' ? null : this._findEmergencySafeX(t, threats, myX);
+	      if (rescueX != null) {
+	        this.group.position.x = rescueX;
+	        this._hopStartX = rescueX;
+	        this._hopTargetX = rescueX;
+	        this._targetX = rescueX;
+	        this.lane = Math.round(rescueX / laneWidth);
+	        continue;
+	      }
+	      if (onCollide && !this._resolvedThreats.has(t.obj)) {
         this._resolvedThreats.add(t.obj);
         this._fatalHit(onCollide, t);
         return;
@@ -500,6 +561,7 @@ export class Rabbit {
       }
       this._updateAnimation(delta, speed);
       this._updateAirShadow();
+      this._updateGroundMarker();
       this._updateDust(delta, playerSpeed);
     }
 
@@ -579,10 +641,133 @@ export class Rabbit {
       return hopY >= t.height - 0.1;
     }
 
-    _threatOverlapsX(t, x) {
-      const halfW = (t.width || 1) / 2 + JANA_BUNNY.BODY_HALF_W;
-      return Math.abs((t.x || 0) - x) <= halfW;
-    }
+	  _threatOverlapsX(t, x, sideClearance = 0) {
+	    const halfW = (t.width || 1) / 2 + JANA_BUNNY.BODY_HALF_W + sideClearance;
+	    return Math.abs((t.x || 0) - x) <= halfW;
+	  }
+
+	  _threatOverlapsHop(t, fromX, toX, sideClearance = 0) {
+	    const halfW = (t.width || 1) / 2 + JANA_BUNNY.BODY_HALF_W + sideClearance;
+	    const minX = Math.min(fromX, toX) - halfW;
+	    const maxX = Math.max(fromX, toX) + halfW;
+	    return (t.x || 0) >= minX && (t.x || 0) <= maxX;
+	  }
+
+	  _xAlongHop(fromX, toX, distIntoHop, hopDist) {
+	    const t = clamp(distIntoHop / Math.max(0.001, hopDist), 0, 1);
+	    const s = t * t * (3 - 2 * t);
+	    return fromX + (toX - fromX) * s;
+	  }
+
+	  _yAlongHop(peak, distIntoHop, hopDist) {
+	    const t = clamp(distIntoHop / Math.max(0.001, hopDist), 0, 1);
+	    return Math.max(0, 4 * peak * t * (1 - t));
+	  }
+
+	  _currentHopYAtFrameOffset(offsetSec) {
+	    if (!this._inHop) return 0;
+	    const elapsed = clamp(this._hopElapsed - offsetSec, 0, this._hopDuration);
+	    const t = clamp(elapsed / Math.max(0.001, this._hopDuration), 0, 1);
+	    return Math.max(0, 4 * this._lastPeak * t * (1 - t));
+	  }
+
+	  _currentHopXAtFrameOffset(offsetSec) {
+	    if (!this._inHop) return this.group ? this.group.position.x : this._hopTargetX;
+	    const elapsed = clamp(this._hopElapsed - offsetSec, 0, this._hopDuration);
+	    const t = clamp(elapsed / Math.max(0.001, this._hopDuration), 0, 1);
+	    const s = t * t * (3 - 2 * t);
+	    return this._hopStartX + (this._hopTargetX - this._hopStartX) * s;
+	  }
+
+	  _megaEntryLeadDistance(building, speed, duration = 0.85) {
+	    const peak = JANA_BUNNY.HOP_PEAK_MEGA;
+	    const targetY = clamp(
+	      (building.archYMin ?? 3) + 1.1,
+	      (building.archYMin ?? 3) + 0.35,
+	      Math.min(peak - 0.1, (building.archYMax ?? 8) - 0.6)
+	    );
+	    const ratio = clamp(targetY / Math.max(0.001, peak), 0.01, 0.99);
+	    const entryT = (1 - Math.sqrt(Math.max(0, 1 - ratio))) / 2;
+	    return speed * duration * entryT;
+	  }
+
+	  _firstSweptGroundThreat(threats, travelled, fromX, toX, speed) {
+	    let best = null;
+	    let bestDist = Infinity;
+	    const maxDist = speed * MEDIUM_LOOKAHEAD_TIME;
+	    for (const t of threats) {
+	      const localDist = t.dist - travelled;
+	      if (localDist <= 0 || localDist > maxDist) continue;
+	      if (t.kind !== 'ground' || !this._canMediumClear(t)) continue;
+	      if (!this._threatOverlapsHop(t, fromX, toX)) continue;
+	      if (localDist < bestDist) {
+	        best = t;
+	        bestDist = localDist;
+	      }
+	    }
+	    return best;
+	  }
+
+	  _aerialRiskAtPeak(t, peak) {
+	    const top = peak + 0.9;
+	    const bottom = peak;
+	    const tBot = (t.y ?? 4) - (t.yHalf ?? 0.5);
+	    const tTop = (t.y ?? 4) + (t.yHalf ?? 0.5);
+	    return !(top < tBot - 0.1 || bottom > tTop + 0.1);
+	  }
+
+	  _findEmergencySafeX(hitThreat, threats, currentX) {
+	    // Last-resort intelligence, not a teleport-to-win: only small lateral
+	    // corrections inside the playable width, and only if the corrected
+	    // body position is clear of every current overlapping threat.
+	    const candidates = [
+	      currentX - 1.5,
+	      currentX + 1.5,
+	      currentX - 3.0,
+	      currentX + 3.0,
+	      this._targetX,
+	      -4.5,
+	      4.5,
+	      0,
+	    ].map((x) => clamp(x, RABBIT_X_MIN, RABBIT_X_MAX));
+
+	    let bestX = null;
+	    let bestMove = Infinity;
+	    for (const x of candidates) {
+	      if (Math.abs(x - currentX) > 3.25) continue;
+	      let safe = true;
+	      for (const t of threats) {
+	        const inZ = t.dist > -(t.len / 2 + JANA_BUNNY.BODY_HALF_L + 0.2) &&
+	                    t.dist <  (t.len / 2 + JANA_BUNNY.BODY_HALF_L + 0.8);
+	        if (!inZ) continue;
+	        if (t.kind === 'building') {
+	          if (!this._canClear(t, Math.max(this._hopY, t.archYMin || 0), x)) {
+	            safe = false;
+	            break;
+	          }
+	          continue;
+	        }
+	        if (this._canClear(t, this._hopY, x)) continue;
+	        safe = false;
+	        break;
+	      }
+	      if (!safe) continue;
+	      const move = Math.abs(x - currentX);
+	      if (move < bestMove) {
+	        bestMove = move;
+	        bestX = x;
+	      }
+	    }
+	    if (bestX != null && this._debug) {
+	      // eslint-disable-next-line no-console
+	      console.log('[rabbit] emergency route correction', {
+	        from: currentX.toFixed(2),
+	        to: bestX.toFixed(2),
+	        threat: hitThreat?.source || hitThreat?.kind,
+	      });
+	    }
+	    return bestX;
+	  }
 
     _canMediumClear(t) {
       return t.kind === 'ground' && (t.height || 0) <= MEDIUM_MAX_CLEAR_HEIGHT;
@@ -745,68 +930,202 @@ export class Rabbit {
   // Lane planning
   // ─────────────────────────────────────────────────────────────
 
-    _planPath(threats, collectibles, playerDistance) {
-      const window = JANA_BUNNY.SWERVE_LOOKAHEAD_M;
-      const myX = this.group ? this.group.position.x : this._targetX;
-      const samples = [-6, -4.5, -3, -1.5, 0, 1.5, 3, 4.5, 6];
+	  _planPath(threats, collectibles, playerDistance, speed) {
+	    const myX = this.group ? this.group.position.x : this._targetX;
+	    let bestX = clamp(this._targetX, RABBIT_X_MIN, RABBIT_X_MAX);
+	    let bestScore = Infinity;
 
-      // Middle-opening buildings are special race moments: the smart move
-      // is to aim for the arch centre early, then let MEGA handle height.
-      for (const t of threats) {
-        if (t.kind !== 'building') continue;
-        const leadingEdge = t.dist - t.len / 2;
-        if (leadingEdge > 0 && leadingEdge < 36) {
-          this._targetX = 0;
-          this._targetLane = 0;
-          return;
-        }
-      }
+	    for (const x of ROUTE_SAMPLES) {
+	      const score = this._scoreFiveHopRoute(myX, x, threats, collectibles, playerDistance, speed);
+	      if (score < bestScore) {
+	        bestScore = score;
+	        bestX = x;
+	      }
+	    }
 
-      let bestX = clamp(this._targetX, RABBIT_X_MIN, RABBIT_X_MAX);
-      let bestScore = Infinity;
-      for (const x of samples) {
-        let score = Math.abs(x - myX) * 0.08;
-        score += Math.abs(x) * 0.015; // tiny centre bias keeps motion tidy when all paths tie
+	    this._targetX = clamp(bestX, RABBIT_X_MIN, RABBIT_X_MAX);
+	    this._targetLane = Math.round(this._targetX / this._laneWidth);
+	  }
 
-        for (const t of threats) {
-          if (t.dist <= -2 || t.dist > window) continue;
-          const proximity = 1 - Math.min(1, Math.max(0, t.dist) / window);
-          const halfW = (t.width || 1) / 2 + JANA_BUNNY.BODY_HALF_W;
-          const lateralOverlap = Math.max(0, halfW - Math.abs((t.x || 0) - x));
-          if (lateralOverlap <= 0) continue;
+	  _scoreFiveHopRoute(startX, goalX, threats, collectibles, playerDistance, speed, options = {}) {
+	    let score = Math.abs(goalX - startX) * 0.32 + Math.abs(goalX) * 0.015;
+	    let safetyPenalty = 0;
+	    let fromX = startX;
+	    let travelled = 0;
+	    let megaCooldown = this._megaCooldownT;
+	    let mediumDecayLeft = this._mediumDecayLeft;
+	    const lowT = JANA_BUNNY.HOP_TIME;
 
-          if (t.kind === 'ground') {
-            if (this._canMediumClear(t)) {
-              score += 0.45 + proximity * 0.85 + lateralOverlap * 0.35;
-            } else {
-              score += 30 + proximity * 25 + lateralOverlap * 6;
-            }
-          } else if (t.kind === 'wall') {
-            score += 40 + proximity * 35 + lateralOverlap * 8;
-          } else if (t.kind === 'player') {
-            score += 6 + proximity * 8 + lateralOverlap * 3;
-          } else if (t.kind === 'aerial') {
-            score += 1.5 + proximity * 2;
-          }
-        }
+	    for (let hop = 0; hop < ROUTE_LOOKAHEAD_HOPS; hop++) {
+	      const forced = hop === 0 ? options.firstHop : null;
+	      const dx = forced ? 0 : clamp(goalX - fromX, -RABBIT_MAX_SIDE_STEP, RABBIT_MAX_SIDE_STEP);
+	      const toX = forced ? clamp(forced.toX, RABBIT_X_MIN, RABBIT_X_MAX) : clamp(fromX + dx, RABBIT_X_MIN, RABBIT_X_MAX);
+	      let hopT = forced?.duration ?? lowT;
+	      let peak = forced?.peak ?? JANA_BUNNY.HOP_PEAK_LOW;
 
-        for (const c of collectibles) {
-          if (!c || c.userData.collected) continue;
-          const cd = (playerDistance + c.position.z) - this.distance;
-          if (cd <= 0 || cd > window) continue;
-          const coinDx = Math.abs((c.position.x ?? 0) - x);
-          if (coinDx < 1.0) score -= 0.35 * (1 - cd / window);
-        }
+	      if (!forced) {
+	        let wantsMega = false;
+	        let neededMedium = 0;
 
-        if (score < bestScore) {
-          bestScore = score;
-          bestX = x;
-        }
-      }
+	        for (const t of threats) {
+	          const localDist = t.dist - travelled;
+	          if (localDist <= -1 || localDist > speed * MEDIUM_MAX_TIME) continue;
+	          if (t.kind === 'building') {
+	            const leading = localDist - t.len / 2;
+	            if (leading > -1 && leading < speed * 0.85) wantsMega = true;
+	            continue;
+	          }
+	          if (t.kind === 'ground' && this._threatOverlapsHop(t, fromX, toX)) {
+	            if (this._canMediumClear(t)) neededMedium = Math.max(neededMedium, t.height || 0);
+	          }
+	        }
 
-      this._targetX = clamp(bestX, RABBIT_X_MIN, RABBIT_X_MAX);
-      this._targetLane = Math.round(this._targetX / this._laneWidth);
-    }
+	        if (wantsMega) {
+	          hopT = 0.85;
+	          peak = JANA_BUNNY.HOP_PEAK_MEGA;
+	          if (Math.abs(toX) > 0.75) {
+	            const penalty = 500 + Math.abs(toX) * 60;
+	            score += penalty;
+	            safetyPenalty += penalty;
+	          }
+	          if (megaCooldown > 0) {
+	            score += 300;
+	            safetyPenalty += 300;
+	          }
+	          megaCooldown = JANA_BUNNY.MEGA_COOLDOWN_SEC;
+	          mediumDecayLeft = 0;
+	        } else if (neededMedium > 0) {
+	          const firstThreat = this._firstSweptGroundThreat(threats, travelled, fromX, toX, speed);
+	          const dist = firstThreat ? Math.max(1, firstThreat.dist - travelled) : speed * 0.35;
+	          hopT = clamp((dist / Math.max(1, speed)) * 2, MEDIUM_MIN_TIME, MEDIUM_MAX_TIME);
+	          peak = this._mediumPeakForHeight(neededMedium);
+	          mediumDecayLeft = JANA_BUNNY.MEDIUM_DECAY_STEPS;
+	          score += 0.35;
+	        } else if (mediumDecayLeft > 0) {
+	          peak = this._mediumDecayPeak;
+	          mediumDecayLeft--;
+	        }
+	      } else if (forced.kind === 'mega') {
+	        megaCooldown = JANA_BUNNY.MEGA_COOLDOWN_SEC;
+	        mediumDecayLeft = 0;
+	      } else if (forced.kind === 'medium') {
+	        mediumDecayLeft = JANA_BUNNY.MEDIUM_DECAY_STEPS;
+	      }
+
+	      const hopDist = speed * hopT;
+	      for (const t of threats) {
+	        const localDist = t.dist - travelled;
+	        if (localDist <= -1 || localDist > hopDist + 1.5) continue;
+	        const xAtThreat = this._xAlongHop(fromX, toX, localDist, hopDist);
+	        const yAtThreat = this._yAlongHop(peak, localDist, hopDist);
+	        const overlaps = this._threatOverlapsX(t, xAtThreat);
+	        const closeBeside = !overlaps && t.kind !== 'building' &&
+	          this._threatOverlapsX(t, xAtThreat, JANA_BUNNY.AI_SIDE_CLEARANCE);
+	        if (!overlaps && !closeBeside && t.kind !== 'building') continue;
+	        const closeness = 1 - clamp(Math.max(0, localDist) / Math.max(1, hopDist), 0, 1);
+	        if (t.kind === 'building') {
+	          const leading = localDist - t.len / 2;
+	          if (leading > -1.5 && leading < hopDist + 1.5) {
+	            const xAtEntry = this._xAlongHop(fromX, toX, Math.max(0, leading), hopDist);
+	            const yAtEntry = this._yAlongHop(peak, Math.max(0, leading), hopDist);
+	            const archOk = Math.abs(xAtEntry) + JANA_BUNNY.BODY_HALF_W <= (t.archHalfW ?? 1.5) - 0.05;
+	            const yOk = yAtEntry >= (t.archYMin ?? 3) - 0.2 && yAtEntry <= (t.archYMax ?? 8) + 0.5;
+	            if (!archOk || !yOk) {
+	              score += 1000;
+	              safetyPenalty += 1000;
+	            }
+	            else score -= 6;
+	          }
+	        } else if (t.kind === 'ground') {
+	          if (closeBeside) {
+	            const penalty = 35 + closeness * 25;
+	            score += penalty;
+	            safetyPenalty += penalty;
+	            continue;
+	          }
+	          if (this._canMediumClear(t)) {
+	            if (yAtThreat < (t.height || 0) + 0.15) {
+	              const penalty = 60 + closeness * 60;
+	              score += penalty;
+	              safetyPenalty += penalty;
+	            }
+	            else score -= 0.5;
+	          } else {
+	            const penalty = 160 + closeness * 120;
+	            score += penalty;
+	            safetyPenalty += penalty;
+	          }
+	        } else if (t.kind === 'wall') {
+	          if (closeBeside) {
+	            const penalty = 70 + closeness * 50;
+	            score += penalty;
+	            safetyPenalty += penalty;
+	            continue;
+	          }
+	          {
+	            const penalty = 220 + closeness * 160;
+	            score += penalty;
+	            safetyPenalty += penalty;
+	          }
+	        } else if (t.kind === 'aerial') {
+	          if (closeBeside) {
+	            const penalty = 45 + closeness * 35;
+	            score += penalty;
+	            safetyPenalty += penalty;
+	            continue;
+	          }
+	          if (this._aerialRiskAtPeak(t, yAtThreat)) {
+	            score += 80;
+	            safetyPenalty += 80;
+	          } else {
+	            score += 0.4;
+	          }
+	        } else if (t.kind === 'player') {
+	          if (closeBeside) {
+	            const penalty = 25 + closeness * 20;
+	            score += penalty;
+	            safetyPenalty += penalty;
+	            continue;
+	          }
+	          {
+	            const penalty = 20 + closeness * 20;
+	            score += penalty;
+	            safetyPenalty += penalty;
+	          }
+	        }
+	      }
+
+	      travelled += hopDist;
+	      fromX = toX;
+	      megaCooldown = Math.max(0, megaCooldown - hopT);
+	    }
+
+	    if (safetyPenalty < 1) {
+	      for (const c of collectibles) {
+	        if (!c || c.userData.collected) continue;
+	        const cd = (playerDistance + c.position.z) - this.distance;
+	        if (cd <= 0 || cd > speed * ROUTE_LOOKAHEAD_HOPS * JANA_BUNNY.HOP_TIME) continue;
+	        if (Math.abs((c.position.x ?? 0) - goalX) < 1.0) score -= 0.18;
+	      }
+	    }
+
+	    return options.returnSafety ? { score, safetyPenalty } : score;
+	  }
+
+	  _bestRouteAfterForcedHop(startX, forcedHop, threats, collectibles, playerDistance, speed) {
+	    let best = { x: forcedHop.toX, score: Infinity, safetyPenalty: Infinity };
+	    for (const goalX of ROUTE_SAMPLES) {
+	      const result = this._scoreFiveHopRoute(startX, goalX, threats, collectibles, playerDistance, speed, {
+	        firstHop: forcedHop,
+	        returnSafety: true,
+	      });
+	      if (result.safetyPenalty < best.safetyPenalty ||
+	          (result.safetyPenalty === best.safetyPenalty && result.score < best.score)) {
+	        best = { x: goalX, score: result.score, safetyPenalty: result.safetyPenalty };
+	      }
+	    }
+	    return best;
+	  }
 
   // ─────────────────────────────────────────────────────────────
   // Hop scheduling
@@ -828,52 +1147,115 @@ export class Rabbit {
    *              so its forward range matches the others, with peak
    *              just much higher. Subject to MEGA_COOLDOWN_SEC.
    */
-    _startHop(threats, speed, laneWidth) {
+    _startHop(threats, collectibles, playerDistance, speed, laneWidth) {
       let T = JANA_BUNNY.HOP_TIME;
-      const hopForward = speed * T;
-      const megaDuration = 0.85;
-      const megaForward = speed * megaDuration;
+	      const megaDuration = 0.85;
       const currentX = this.group ? this.group.position.x : this._hopTargetX;
       const targetX = clamp(this._targetX, RABBIT_X_MIN, RABBIT_X_MAX);
       const dx = clamp(targetX - currentX, -RABBIT_MAX_SIDE_STEP, RABBIT_MAX_SIDE_STEP);
-      const landingX = clamp(currentX + dx, RABBIT_X_MIN, RABBIT_X_MAX);
-      this._hopStartX     = currentX;
-      this._hopTargetX    = landingX;
-      this._hopLaneTarget = Math.round(landingX / (laneWidth || this._laneWidth));
+      let landingX = clamp(currentX + dx, RABBIT_X_MIN, RABBIT_X_MAX);
       this._hopElapsed    = 0;
-      let peak = JANA_BUNNY.HOP_PEAK_LOW;
-      let hopKind = 'low';
-      let nearestObstacleDist = Infinity;
-      let nearestObstacleHeight = 0;
-      let buildingAhead = null;
+	    let peak = JANA_BUNNY.HOP_PEAK_LOW;
+	    let hopKind = 'low';
+	    let nearestObstacleDist = Infinity;
+	    let nearestObstacleHeight = 0;
+	    let buildingAhead = null;
       for (const t of threats) {
         if (t.dist <= 0) continue;
         if (t.kind === 'building') {
           const leading = t.dist - t.len / 2;
-        // Trigger MEGA when the rabbit is within a few hops of the
-        // building (so the arc apex lands inside the arch).
-          if (leading <= megaForward * 0.72) buildingAhead = t;
+          const entryLead = this._megaEntryLeadDistance(t, speed, megaDuration);
+          const readyWindow = Math.max(speed * JANA_BUNNY.HOP_TIME + 1.0, speed * 0.42);
+          if (leading <= entryLead + readyWindow) {
+            if (!buildingAhead || leading < buildingAhead.dist - buildingAhead.len / 2) {
+              buildingAhead = t;
+            }
+          }
         } else if (t.kind === 'ground' && this._threatOverlapsX(t, landingX)) {
           if (!this._canMediumClear(t)) continue;
           if (t.dist < nearestObstacleDist) nearestObstacleDist = t.dist;
           nearestObstacleHeight = Math.max(nearestObstacleHeight, t.height || 0);
         }
       }
-      if (buildingAhead && this._megaCooldownT <= 0) {
-        T = megaDuration;
-        peak = JANA_BUNNY.HOP_PEAK_MEGA;
-        hopKind = 'mega';
-        this._megaCooldownT = JANA_BUNNY.MEGA_COOLDOWN_SEC;
-        this._mediumDecayLeft = 0;        // MEGA cancels any pending decay
-        this._targetX = 0;
-      } else if (nearestObstacleDist < hopForward * 1.1) {
-        // Obstacle within reach → MEDIUM, but sized to the obstacle
-        // instead of a fixed jump. It can clear up to 3m and then
-        // settles down over the next two hops.
-        peak = this._mediumPeakForHeight(nearestObstacleHeight);
-        hopKind = 'medium';
-        this._mediumDecayLeft = JANA_BUNNY.MEDIUM_DECAY_STEPS;
-        this._mediumDecayPeak = peak;
+	    if (!(buildingAhead && this._megaCooldownT <= 0)) {
+	      const sweptThreat = this._firstSweptGroundThreat(threats, 0, currentX, landingX, speed);
+	      if (sweptThreat) {
+	        nearestObstacleDist = sweptThreat.dist;
+	        nearestObstacleHeight = Math.max(nearestObstacleHeight, sweptThreat.height || 0);
+	      }
+	    }
+
+	    if (buildingAhead && this._megaCooldownT <= 0) {
+	      T = megaDuration;
+	      peak = JANA_BUNNY.HOP_PEAK_MEGA;
+	      hopKind = 'mega';
+	      landingX = 0;
+	      this._targetX = 0;
+	      const megaRoute = this._bestRouteAfterForcedHop(currentX, {
+	        kind: 'mega',
+	        toX: landingX,
+	        duration: T,
+	        peak,
+	      }, threats, collectibles, playerDistance, speed);
+	      const buildingLead = buildingAhead.dist - buildingAhead.len / 2;
+	      const idealLead = this._megaEntryLeadDistance(buildingAhead, speed, T);
+	      const latestSafeNextHopLead = idealLead + speed * JANA_BUNNY.HOP_TIME;
+	      const tooEarly = buildingLead > latestSafeNextHopLead + 1.0;
+	      if (tooEarly) {
+	        // Do not jump into the arch too early if the landing/follow-up
+	        // route is trapped. Hold centre and let the next hop rescore.
+	        T = JANA_BUNNY.HOP_TIME;
+	        peak = JANA_BUNNY.HOP_PEAK_LOW;
+	        hopKind = 'low';
+	      } else {
+	        this._megaCooldownT = JANA_BUNNY.MEGA_COOLDOWN_SEC;
+	        this._mediumDecayLeft = 0;        // MEGA cancels any pending decay
+	        this._targetX = megaRoute.x;
+	      }
+	    } else if (nearestObstacleDist < speed * MEDIUM_LOOKAHEAD_TIME) {
+	      // Obstacle within reach -> MEDIUM. Time the hop so the rabbit is
+	      // near the top of the arc over the obstacle instead of landing
+	      // just before it at slower race speeds.
+	      let bestMedium = null;
+	      for (const candidateX of ROUTE_SAMPLES) {
+	        const candidateDx = candidateX - currentX;
+	        if (Math.abs(candidateDx) > RABBIT_MAX_SIDE_STEP + 0.01) continue;
+	        const candidateLandingX = clamp(candidateX, RABBIT_X_MIN, RABBIT_X_MAX);
+	        const sweptThreat = this._firstSweptGroundThreat(threats, 0, currentX, candidateLandingX, speed);
+	        if (!sweptThreat) continue;
+	        const candidateT = clamp((Math.max(1, sweptThreat.dist) / Math.max(1, speed)) * 2, MEDIUM_MIN_TIME, MEDIUM_MAX_TIME);
+	        const candidatePeak = this._mediumPeakForHeight(sweptThreat.height || 0);
+	        const route = this._bestRouteAfterForcedHop(currentX, {
+	          kind: 'medium',
+	          toX: candidateLandingX,
+	          duration: candidateT,
+	          peak: candidatePeak,
+	        }, threats, collectibles, playerDistance, speed);
+	        const candidate = {
+	          landingX: candidateLandingX,
+	          T: candidateT,
+	          peak: candidatePeak,
+	          score: route.score + Math.abs(candidateLandingX - targetX) * 0.15,
+	          safetyPenalty: route.safetyPenalty,
+	        };
+	        if (!bestMedium ||
+	            candidate.safetyPenalty < bestMedium.safetyPenalty ||
+	            (candidate.safetyPenalty === bestMedium.safetyPenalty && candidate.score < bestMedium.score)) {
+	          bestMedium = candidate;
+	        }
+	      }
+	      if (bestMedium) {
+	        landingX = bestMedium.landingX;
+	        T = bestMedium.T;
+	        peak = bestMedium.peak;
+	        this._targetX = bestMedium.safetyPenalty < 1 ? targetX : landingX;
+	      } else {
+	        T = clamp((nearestObstacleDist / Math.max(1, speed)) * 2, MEDIUM_MIN_TIME, MEDIUM_MAX_TIME);
+	        peak = this._mediumPeakForHeight(nearestObstacleHeight);
+	      }
+	      hopKind = 'medium';
+	      this._mediumDecayLeft = JANA_BUNNY.MEDIUM_DECAY_STEPS;
+	      this._mediumDecayPeak = peak;
       } else if (this._mediumDecayLeft > 0) {
         // Post-MEDIUM decay: linearly blend between MEDIUM and LOW so
         // the rabbit settles down over a couple of hops.
@@ -888,6 +1270,9 @@ export class Rabbit {
         peak = JANA_BUNNY.HOP_PEAK_LOW;
         hopKind = 'low';
       }
+      this._hopStartX     = currentX;
+      this._hopTargetX    = landingX;
+      this._hopLaneTarget = Math.round(landingX / (laneWidth || this._laneWidth));
     // Solve for v and g so the arc reaches `peak` in time T:
     //   v = 4 h / T,  g = 2 v / T  =  8 h / T²
     // Forward distance D = speed × T is independent of peak — every
@@ -1052,6 +1437,41 @@ export class Rabbit {
       this._groundShadow.material.opacity = clamp(0.22 - height * 0.018, 0.07, 0.22);
     }
 
+    /**
+     * Bright red ring on the ground that always tracks the rabbit's
+     * X/Z. Lets the player spot the rabbit at a glance even from the
+     * standard chase cam, and acts as a "movement marker" similar in
+     * function to the snow trail behind the player.
+     */
+    _createGroundMarker() {
+      if (!this._scene || this._groundMarker) return;
+      const mat = new THREE.MeshBasicMaterial({
+        color: 0xff2020,
+        transparent: true,
+        opacity: 0.85,
+        depthWrite: false,
+      });
+      // Ring (donut) so the rabbit's body sits in the middle and
+      // the colour is clearly visible around it.
+      const ring = new THREE.Mesh(new THREE.RingGeometry(0.55, 0.85, 32), mat);
+      ring.rotation.x = -Math.PI / 2;
+      ring.position.y = 0.06;
+      ring.renderOrder = 4;          // above ground, below rabbit body
+      this._scene.add(ring);
+      this._groundMarker = ring;
+    }
+
+    _updateGroundMarker() {
+      if (!this._groundMarker || !this.group) return;
+      this._groundMarker.position.x = this.group.position.x;
+      this._groundMarker.position.z = this.group.position.z;
+      // Subtle pulse so it reads as alive even while stationary.
+      const t = (typeof performance !== 'undefined' ? performance.now() : 0) * 0.001;
+      const pulse = 1 + Math.sin(t * 3) * 0.05;
+      this._groundMarker.scale.set(pulse, pulse, 1);
+      this._groundMarker.material.opacity = 0.7 + 0.15 * Math.sin(t * 3);
+    }
+
     _spawnLandingDust(peak, x, z) {
       if (!this._scene || peak <= JANA_BUNNY.HOP_PEAK_LOW + 0.02) return;
       const strength = clamp(
@@ -1112,6 +1532,12 @@ export class Rabbit {
         if (this._groundShadow.geometry) this._groundShadow.geometry.dispose();
         if (this._groundShadow.material) this._groundShadow.material.dispose();
         this._groundShadow = null;
+      }
+      if (this._groundMarker) {
+        this._scene.remove(this._groundMarker);
+        if (this._groundMarker.geometry) this._groundMarker.geometry.dispose();
+        if (this._groundMarker.material) this._groundMarker.material.dispose();
+        this._groundMarker = null;
       }
       for (const puff of this._dustPuffs) {
         this._scene.remove(puff);
