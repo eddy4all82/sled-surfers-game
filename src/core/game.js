@@ -5699,12 +5699,35 @@ export class Game {
     this._setBiome('snow', { immediate: true });
     if (this.biomeBannerEl) this.biomeBannerEl.classList.remove('show');
 
-    // Reset player position
+    // Reset player position — snap to the front line (X=0, Y=0, Z=0)
+    // with no transition / momentum so the round always begins with
+    // the penguin parked dead-centre on the start line.
     this.player.position.set(0, 0.0, 0);
     this.player.rotation.set(0, 0, 0);
     this.player.visible = true;
     this.playerY = 0;
     this._cleanupExplosion();
+    // Snap-reset the progress-bar markers (CSS has a 0.15s transition
+    // that would otherwise animate them down from their old position).
+    // Setting transition:none, writing 0%, forcing a reflow, then
+    // restoring the transition gives an instant reset.
+    const snapMarker = (el) => {
+      if (!el) return;
+      const t = el.style.transition;
+      el.style.transition = 'none';
+      el.style.bottom = '0%';
+      void el.offsetHeight;     // force layout flush
+      el.style.transition = t;  // restore CSS-defined transition
+    };
+    snapMarker(this.progressMarkerEl);
+    snapMarker(this.progressRabbitMarkerEl);
+    if (this.progressFillEl) {
+      const t = this.progressFillEl.style.transition;
+      this.progressFillEl.style.transition = 'none';
+      this.progressFillEl.style.transform = 'scaleY(0)';
+      void this.progressFillEl.offsetHeight;
+      this.progressFillEl.style.transition = t;
+    }
 
     // Clear and respawn coins, ramps, and cross-streets
     this.obstacles.forEach(o => this.scene.remove(o));
