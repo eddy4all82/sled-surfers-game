@@ -933,10 +933,7 @@ export class Game {
       // is warm, re-walk the side-decor through the Kenney fast-path.
       if (modelResult.ready > 0 && this.state === 'ready') {
         this._clearScenery();
-        for (let z = 0; z < 400; z += 12) {
-          this._addSideDecor(-1, z);
-          this._addSideDecor(1, z + 6);
-        }
+        this._spawnSideDecor();
       }
     });
 
@@ -1982,11 +1979,11 @@ export class Game {
     // Decorative cloud cover with ground shadows
     this._setupClouds();
 
-    // Pine trees and buildings along both sides
-    for (let z = 0; z < 400; z += 12) {
-      this._addSideDecor(-1, z);
-      this._addSideDecor(1, z + 6);
-    }
+    // Pine trees and buildings along both sides — extracted to a
+    // helper so restart() can re-walk it cleanly when scenery is
+    // cleared between rounds (e.g. to swap in Kenney GLBs once
+    // models finish preloading).
+    this._spawnSideDecor();
 
     // Cross-streets (perpendicular roads with crossing traffic)
     let cz = 35;
@@ -3786,6 +3783,16 @@ export class Game {
   _clearCrossStreets() {
     for (const s of this.crossStreets) this.scene.remove(s);
     this.crossStreets = [];
+  }
+
+  // Walk the procedural side-decor placement loop. Single source of
+  // truth used by init() and restart() so we don't have inline copies
+  // drifting apart.
+  _spawnSideDecor() {
+    for (let z = 0; z < 400; z += 12) {
+      this._addSideDecor(-1, z);
+      this._addSideDecor(1, z + 6);
+    }
   }
 
   // Tear down every side-decor scenery item so a fresh _buildCourse
@@ -5900,17 +5907,19 @@ export class Game {
     this._hideContinueOption();
     // Optionally roll a fresh seed (PLAY AGAIN). Replay button passes newSeed=false.
     if (opts.newSeed) {
-      // Clear scenery first so _buildCourse re-walks side decor
-      // through the Kenney fast-path (procedural ones from earlier
-      // rounds, built before the model preload finished, are gone).
+      // Clear scenery first so the side-decor walk re-spawns through
+      // the Kenney fast-path (procedural ones from earlier rounds,
+      // built before the model preload finished, are gone).
       this._clearScenery();
       this.courseSeed = randomSeed();
       this._buildCourse();
+      this._spawnSideDecor();          // re-spawn buildings/trees/etc.
       this._populateProgressMilestones();
     } else if (!this.map) {
       // Defensive: ensure a map exists if this is the first call
       this._clearScenery();
       this._buildCourse();
+      this._spawnSideDecor();
       this._populateProgressMilestones();
     } else {
       // Same-seed replay: reset finish line + mountain blocks back to their
