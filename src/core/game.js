@@ -870,7 +870,7 @@ export class Game {
     document.getElementById('start-btn').addEventListener(
       'click', startGesture(() => this.start()));
     document.getElementById('restart-btn').addEventListener(
-      'click', startGesture(() => this.restart()));
+      'click', startGesture(() => this.restart({ newSeed: true })));
     // Sprint Run CONTINUE button — resume from the death spot.
     const continueBtn = document.getElementById('continue-btn');
     if (continueBtn) continueBtn.addEventListener(
@@ -928,6 +928,16 @@ export class Game {
         : `Ready! (${modelResult.ready}/${modelResult.total} models loaded)`;
       this.loadingEl.textContent = msg;
       if (startBtn) startBtn.disabled = false;
+      // First-round upgrade: scenery was spawned procedurally during
+      // init() because models hadn't preloaded yet. Now that the cache
+      // is warm, re-walk the side-decor through the Kenney fast-path.
+      if (modelResult.ready > 0 && this.state === 'ready') {
+        this._clearScenery();
+        for (let z = 0; z < 400; z += 12) {
+          this._addSideDecor(-1, z);
+          this._addSideDecor(1, z + 6);
+        }
+      }
     });
 
     // Start render loop
@@ -3778,6 +3788,32 @@ export class Game {
     this.crossStreets = [];
   }
 
+  // Tear down every side-decor scenery item so a fresh _buildCourse
+  // call can re-walk and re-spawn through the Kenney GLB fast-path.
+  // Releases InstancedScenery slots for instanced markers (pine,
+  // palm, lamp) so the pool stays balanced; the recycle hook lives
+  // on userData.releaseInstance.
+  _clearScenery() {
+    if (!this.scenery || !this.scenery.length) return;
+    for (const s of this.scenery) {
+      if (s.userData && typeof s.userData.releaseInstance === 'function') {
+        try { s.userData.releaseInstance(); } catch (e) { /* ignore */ }
+      }
+      this.scene.remove(s);
+      // Dispose non-instanced geometry/material so we don't leak.
+      s.traverse?.((o) => {
+        if (o.isMesh) {
+          if (o.geometry) o.geometry.dispose();
+          if (o.material) {
+            if (Array.isArray(o.material)) o.material.forEach((m) => m.dispose());
+            else o.material.dispose();
+          }
+        }
+      });
+    }
+    this.scenery = [];
+  }
+
   _spawnRamp(z) {
     // Project-wide rule: never deploy a ramp on a cross-street.
     const safeZ = this._clampToSafeZ(z, 8);
@@ -5864,11 +5900,16 @@ export class Game {
     this._hideContinueOption();
     // Optionally roll a fresh seed (PLAY AGAIN). Replay button passes newSeed=false.
     if (opts.newSeed) {
+      // Clear scenery first so _buildCourse re-walks side decor
+      // through the Kenney fast-path (procedural ones from earlier
+      // rounds, built before the model preload finished, are gone).
+      this._clearScenery();
       this.courseSeed = randomSeed();
       this._buildCourse();
       this._populateProgressMilestones();
     } else if (!this.map) {
       // Defensive: ensure a map exists if this is the first call
+      this._clearScenery();
       this._buildCourse();
       this._populateProgressMilestones();
     } else {
