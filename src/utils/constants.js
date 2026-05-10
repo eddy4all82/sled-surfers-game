@@ -78,13 +78,11 @@ export const GAME_CONFIG = {
  * when gameMode === 'jana_bunny'. Sprint Run never reads from this.
  */
 export const JANA_BUNNY = {
-  // Forward speed tracks the player's CURRENT speed × this multiplier.
-  // 0.98 keeps the race close — rabbit slightly faster on the early
-  // ramp-up, slightly slower at top speed, so a clean run wins by a
-  // small margin and a sloppy run loses. Used as a fallback constant
-  // if the player's live speed isn't available.
-  RABBIT_SPEED_MULT:     0.98,
-  RABBIT_SPEED:           28,    // Fallback world-units/sec (only if env.playerSpeed is missing)
+	  // Jana Bunny fixed race pace in world-units/sec.
+	  // Keep the multiplier for legacy/debug paths that still derive a
+	  // relative speed, but the rabbit racer itself now uses RABBIT_SPEED.
+	  RABBIT_SPEED_MULT:     0.98,
+	  RABBIT_SPEED:           25,
   // Hop modes — three peaks share the SAME time aloft (HOP_TIME), so
   // every hop covers the same forward distance regardless of height.
   // Per-hop gravity is derived: g = 8h / T², initial v.vel = 4h / T.
@@ -112,6 +110,7 @@ export const JANA_BUNNY = {
   // visual mesh (currently 69% of the original — 60% × 1.15 bump).
   BODY_HALF_W:           0.38,   // half-width along X
   BODY_HALF_L:           0.48,   // half-length along Z
+  AI_SIDE_CLEARANCE:     1.0,    // extra route-planning gap beside obstacles
   // Look-ahead window: the rabbit scans this many world-units ahead
   // for upcoming obstacles each frame to plan its next hop / lane.
   LOOKAHEAD_M:           30,

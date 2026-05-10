@@ -928,13 +928,14 @@ export class Game {
         : `Ready! (${modelResult.ready}/${modelResult.total} models loaded)`;
       this.loadingEl.textContent = msg;
       if (startBtn) startBtn.disabled = false;
-      // First-round upgrade: scenery was spawned procedurally during
-      // init() because models hadn't preloaded yet. Now that the cache
-      // is warm, re-walk the side-decor through the Kenney fast-path.
-      if (modelResult.ready > 0 && this.state === 'ready') {
-        this._clearScenery();
-        this._spawnSideDecor();
-      }
+      // First scenery walk happens HERE (not in _createPlaceholderWorld)
+      // so the Kenney models are guaranteed loaded by the time the
+      // spawners try to clone them. The state-gate is intentionally
+      // loose: even if the user has already clicked PLAY (state moved
+      // to 'countdown'/'playing'), we still want the scenery populated.
+      // Clear any leftover items from prior tabs / hot-reloads first.
+      this._clearScenery();
+      this._spawnSideDecor();
     });
 
     // Start render loop
@@ -1979,11 +1980,12 @@ export class Game {
     // Decorative cloud cover with ground shadows
     this._setupClouds();
 
-    // Pine trees and buildings along both sides — extracted to a
-    // helper so restart() can re-walk it cleanly when scenery is
-    // cleared between rounds (e.g. to swap in Kenney GLBs once
-    // models finish preloading).
-    this._spawnSideDecor();
+    // Side-decor walk is intentionally DEFERRED until the GLB preload
+    // resolves (see init() / Promise.all().then()). Walking it here
+    // would race the model loader and lock-in procedural fallbacks,
+    // since cloneByKey returns null until the model is parsed. The
+    // start screen is up during preload, so the world is allowed to
+    // be empty for those few hundred milliseconds.
 
     // Cross-streets (perpendicular roads with crossing traffic)
     let cz = 35;
@@ -2076,14 +2078,11 @@ export class Game {
     z = safeZ;
     const sign = side;
     if (!biome) {
-      // During a biome crossfade, randomly pick the previous or current biome
-      // weighted by how far into the new biome we are. This gives a soft
-      // "mixed-decor" stretch for ~50 units around each threshold.
-      if (this.biomeProgress < 1 && this.previousBiome && Math.random() > this.biomeProgress) {
-        biome = this.previousBiome;
-      } else {
-        biome = this.currentBiome || 'snow';
-      }
+      // We walk the full course at init, so the world Z of this spawn
+      // *is* the value of `z` (player.distance == 0 at init time). Pick
+      // the biome from the world-Z so each chunk of the course gets the
+      // right scenery (snow before 500m, city 500-1000m, tropical after).
+      biome = this._biomeForDistance(z);
     }
     const roll = Math.random();
 
@@ -2096,22 +2095,33 @@ export class Game {
     const rockX = () => sign * (7.5 + Math.random() * 2.5);
 
     if (biome === 'snow') {
-      if (roll < 0.32) {
-        this._addSnowShop(buildingX(), z + (Math.random() - 0.5) * 4);
-      } else if (roll < 0.46) {
-        this._addSnowTallBuilding(buildingX(), z + (Math.random() - 0.5) * 4);
-      } else if (roll < 0.66) {
+      // Snow biome = outdoor festival event. Heavier weight on tents,
+      // trees, and a cheering crowd watching the penguin race.
+      if (roll < 0.18) {
+        this._addSnowShop(buildingX(), z + (Math.random() - 0.5) * 4);   // tent
+      } else if (roll < 0.26) {
+        this._addSnowTallBuilding(buildingX(), z + (Math.random() - 0.5) * 4); // big decorated tree
+      } else if (roll < 0.55) {
+        // Heavy snow-tree zone (29% of slots) — cluster 1-3 trees
         const baseX = treeX();
         this._addPineTree(baseX, z, biome);
-        if (Math.random() < 0.45) {
+        if (Math.random() < 0.6) {
           this._addPineTree(baseX + sign * (1 + Math.random()), z + 2 + Math.random() * 2, biome);
         }
+        if (Math.random() < 0.3) {
+          this._addPineTree(baseX + sign * (2 + Math.random()), z - 2 - Math.random() * 2, biome);
+        }
+      } else if (roll < 0.66) {
+        // Cheering crowd watching the penguin run
+        this._addCheeringCrowd(sign, z + (Math.random() - 0.5) * 3);
       } else if (roll < 0.74) {
         this._addCabin(buildingX(), z + (Math.random() - 0.5) * 4);
-      } else if (roll < 0.88) {
+      } else if (roll < 0.84) {
         this._addRockCluster(rockX(), z + (Math.random() - 0.5) * 2, biome);
-      } else {
+      } else if (roll < 0.92) {
         this._addStreetLamp(lampX(), z + (Math.random() - 0.5) * 4);
+      } else {
+        this._addFestivalProp(sign, z + (Math.random() - 0.5) * 3);
       }
     } else if (biome === 'city') {
       if (roll < 0.34) {
@@ -2122,13 +2132,15 @@ export class Game {
         }
       } else if (roll < 0.55) {
         this._addCityMidRise(buildingX(), z + (Math.random() - 0.5) * 4);
-      } else if (roll < 0.74) {
+      } else if (roll < 0.70) {
         this._addPalmTree(treeX(), z);
         if (Math.random() < 0.5) this._addPlanter(treeX() * 0.85, z + 1.2);
-      } else if (roll < 0.88) {
+      } else if (roll < 0.80) {
         this._addRockCluster(rockX(), z + (Math.random() - 0.5) * 2, biome);
-      } else {
+      } else if (roll < 0.90) {
         this._addStreetLamp(lampX(), z + (Math.random() - 0.5) * 4);
+      } else {
+        this._addCityRoadFurniture(sign, z + (Math.random() - 0.5) * 3);
       }
     } else { // tropical
       if (roll < 0.36) {
@@ -2150,6 +2162,109 @@ export class Game {
         this._addStreetLamp(lampX(), z + (Math.random() - 0.5) * 4);
       }
     }
+  }
+
+  // Drops a small cluster of Kenney spectator characters facing the
+  // race lane — the "fans watching the penguin" moment for the snow
+  // biome event. Falls through silently if models aren't ready.
+  _addCheeringCrowd(side, z) {
+    if (!this._models) return;
+    const PEOPLE = [
+      'people/male-a', 'people/male-b', 'people/male-c', 'people/male-d',
+      'people/male-e', 'people/male-f',
+      'people/female-a', 'people/female-b', 'people/female-c', 'people/female-d',
+    ];
+    const count = 2 + Math.floor(Math.random() * 3);   // 2-4 spectators
+    const baseX = side * (8 + Math.random() * 2.5);
+    const group = new THREE.Group();
+    for (let i = 0; i < count; i++) {
+      const pkey = PEOPLE[Math.floor(Math.random() * PEOPLE.length)];
+      const ch = this._models.cloneByKey(pkey);
+      if (!ch) continue;
+      // Mini Characters 1 are ~1.7m tall by default — keep that scale.
+      this._models.fitToBox(ch, { height: 1.6, mode: 'fit' });
+      const dx = (Math.random() - 0.5) * 1.2;
+      const dz = (i - count / 2) * 0.7 + (Math.random() - 0.5) * 0.3;
+      ch.position.set(dx, 0.01, dz);
+      // Face the race lane (toward x=0): rotate so character's forward
+      // axis points toward the lane center. Kenney chars face -Z by
+      // default, so when on the right side (sign=+1) we yaw +π/2 to
+      // face left toward the lane; on the left side we yaw -π/2.
+      ch.rotation.y = -side * Math.PI / 2 + (Math.random() - 0.5) * 0.5;
+      group.add(ch);
+    }
+    if (group.children.length === 0) return;
+    group.position.set(baseX, 0, z);
+    group.userData.type = 'scenery';
+    group.userData.kenneyModel = true;
+    group.userData.biome = 'snow';
+    group.userData.kind = 'crowd';
+    // Soft hit-box: characters are passable visually-only props. Mark
+    // collidable false so the player can clip them at speed if our
+    // safe-Z drift puts the cluster too close.
+    group.userData.collidable = false;
+    this.scene.add(group);
+    this.scenery.push(group);
+  }
+
+  // Drops a single decorative festival prop in the snow biome — a
+  // snowman, a sled, a stack of presents, or a lantern. Adds variety
+  // to the side decor without inflating the building/tree count.
+  _addFestivalProp(side, z) {
+    if (!this._models) return;
+    const PROPS = [
+      { key: 'holiday/snowman',         h: 1.4 },
+      { key: 'holiday/sled',            h: 0.7 },
+      { key: 'holiday/present-cube',    h: 0.6 },
+      { key: 'holiday/present-rect',    h: 0.5 },
+      { key: 'holiday/lantern',         h: 1.1 },
+      { key: 'holiday/snow-pile',       h: 0.6 },
+    ];
+    const choice = PROPS[Math.floor(Math.random() * PROPS.length)];
+    const km = this._models.cloneByKey(choice.key);
+    if (!km) return;
+    this._models.fitToBox(km, { height: choice.h, mode: 'fit' });
+    km.rotation.y = Math.random() * Math.PI * 2;
+    const group = new THREE.Group();
+    group.add(km);
+    group.position.set(side * (8.5 + Math.random() * 2), 0.01, z);
+    group.userData.type = 'scenery';
+    group.userData.kenneyModel = true;
+    group.userData.biome = 'snow';
+    group.userData.kind = 'festival_prop';
+    group.userData.collidable = false;
+    this.scene.add(group);
+    this.scenery.push(group);
+  }
+
+  // Drops a Kenney highway sign or modern streetlight along the city
+  // sidewalk. Used to make the city biome feel signposted/lived-in.
+  _addCityRoadFurniture(side, z) {
+    if (!this._models) return;
+    const FURN = [
+      { key: 'road/sign-highway',          h: 4.5, x: 11 },
+      { key: 'road/sign-highway-wide',     h: 4.5, x: 11 },
+      { key: 'road/sign-highway-detailed', h: 5.0, x: 11 },
+      { key: 'road/light-curved',          h: 5.5, x: 7  },
+      { key: 'road/light-curved-double',   h: 5.5, x: 7  },
+      { key: 'road/light-square',          h: 5.0, x: 7  },
+    ];
+    const choice = FURN[Math.floor(Math.random() * FURN.length)];
+    const km = this._models.cloneByKey(choice.key);
+    if (!km) return;
+    this._models.fitToBox(km, { height: choice.h, mode: 'fit' });
+    // Sign should face the road (yaw 90° on side=+1, -90° on side=-1).
+    km.rotation.y = -side * Math.PI / 2;
+    const group = new THREE.Group();
+    group.add(km);
+    group.position.set(side * (choice.x + Math.random() * 1.5), 0.01, z);
+    group.userData.type = 'scenery';
+    group.userData.kenneyModel = true;
+    group.userData.biome = 'city';
+    group.userData.kind = 'city_furniture';
+    group.userData.collidable = false;
+    this.scene.add(group);
+    this.scenery.push(group);
   }
 
   _addParkedVehicle(side, x, z) {
@@ -2242,6 +2357,35 @@ export class Game {
 
   _addPineTree(x, z, biome) {
     biome = biome || this.currentBiome || 'snow';
+    // Snow biome: ~35% chance to upgrade an instanced pine into a real
+    // Kenney holiday snow-tree. Non-instanced (so no perf savings) but
+    // visually richer — gives the snow stretch a varied "festival forest"
+    // look. Falls through to the instanced path if the model isn't ready
+    // or the dice rolls cold, so perf stays bounded.
+    if (biome === 'snow' && this._models && Math.random() < 0.35) {
+      const TREE_KEYS = ['holiday/tree-snow-a', 'holiday/tree-snow-b', 'holiday/tree-snow-c'];
+      const key = TREE_KEYS[Math.floor(Math.random() * TREE_KEYS.length)];
+      const km = this._models.cloneByKey(key);
+      if (km) {
+        const targetH = 3.2 + Math.random() * 1.6;  // 3.2-4.8m
+        this._models.fitToBox(km, { height: targetH, mode: 'fit' });
+        km.rotation.y = Math.random() * Math.PI * 2;
+        const group = new THREE.Group();
+        group.position.set(x, 0, z);
+        group.add(km);
+        group.userData.type = 'scenery';
+        group.userData.biome = biome;
+        group.userData.kenneyModel = true;
+        group.userData.collidable = true;
+        group.userData.length = 1.0;
+        group.userData.width  = 1.0;
+        group.userData.height = 4.0;
+        group.userData.kind = 'tree';
+        this.scene.add(group);
+        this.scenery.push(group);
+        return;
+      }
+    }
     // Phase 1 perf: instanced. Returns a marker Group (no real meshes added
     // to the scene) carrying the instance handle. Recycle path releases
     // the instance via _disposeObject's userData.releaseInstance hook.
@@ -2269,6 +2413,32 @@ export class Game {
     const w = 3 + Math.random() * 1.5;
     const h = 2.2 + Math.random() * 0.6;
     const d = 3 + Math.random() * 1.2;
+
+    // Kenney fast-path — reuses the city-kit mid-rise GLBs scaled
+    // down to cabin proportions. Falls through to the procedural log
+    // cabin geometry if the model cache isn't ready.
+    if (this._models) {
+      const KEYS = ['buildings/a', 'buildings/b', 'buildings/c', 'buildings/d', 'buildings/e'];
+      const km = this._models.cloneByKey(KEYS[Math.floor(Math.random() * KEYS.length)]);
+      if (km) {
+        this._models.fitToBox(km, { width: w, height: h, length: d, mode: 'stretch' });
+        km.position.y = 0.01;
+        group.add(km);
+        group.userData.kenneyModel = true;
+        group.position.set(x, 0, z);
+        group.rotation.y = (x < 0 ? -1 : 1) * (Math.PI / 8) * (Math.random() - 0.5);
+        group.userData.type = 'scenery';
+        group.userData.biome = 'snow';
+        group.userData.kind = 'cabin';
+        group.userData.collidable = true;
+        group.userData.length = d;
+        group.userData.width  = w;
+        group.userData.height = h;
+        this.scene.add(group);
+        this.scenery.push(group);
+        return;
+      }
+    }
 
     const wallMat = new THREE.MeshStandardMaterial({ color: 0x6b4423, roughness: 0.9 });
     const wall = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), wallMat);
@@ -2466,6 +2636,45 @@ export class Game {
     const w = 3 + Math.random() * 2;       // 3-5
     const h = 4 + Math.random() * 2;       // 4-6
     const d = 3 + Math.random() * 1.6;
+    // Snow biome reads as an outdoor festival, NOT a small town. Replace
+    // procedural shops with Kenney survival tents + a watching crowd /
+    // campfire combo. The "shop" name is kept so the side-decor picker
+    // doesn't need to change.
+    if (this._models) {
+      const tentKeys = ['survival/tent', 'survival/tent-canvas', 'survival/tent-canvas-half'];
+      const km = this._models.cloneByKey(tentKeys[Math.floor(Math.random() * tentKeys.length)]);
+      if (km) {
+        // Kenney tents are ~2m wide × 2m tall × 2m long natively. Scale up
+        // to match the previous snow-shop footprint so the safe-Z and
+        // collision math (which both read .length) stays compatible.
+        this._models.fitToBox(km, { width: w * 0.85, height: h * 0.55, length: d * 0.85, mode: 'fit' });
+        km.position.y = 0.01;
+        km.rotation.y = Math.random() * Math.PI * 2;
+        group.add(km);
+
+        // 30% chance: park a campfire next to the tent for a camp vibe.
+        if (Math.random() < 0.3) {
+          const fire = this._models.cloneByKey('survival/campfire-pit');
+          if (fire) {
+            fire.position.set((Math.random() - 0.5) * 1.6, 0.02, (Math.random() - 0.5) * 1.6);
+            this._models.fitToBox(fire, { height: 0.5, mode: 'fit' });
+            group.add(fire);
+          }
+        }
+        group.userData.kenneyModel = true;
+        group.position.set(x, 0, z);
+        group.userData.type = 'scenery';
+        group.userData.biome = 'snow';
+        group.userData.kind = 'snow_tent';
+        group.userData.collidable = true;
+        group.userData.length = d;
+        group.userData.width  = w;
+        group.userData.height = h * 0.6;
+        this.scene.add(group);
+        this.scenery.push(group);
+        return;
+      }
+    }
     const palette = [0x4a90d9, 0x7ecfb3, 0xb5651d, 0xc0392b, 0xe6a23c];
     const color = palette[Math.floor(Math.random() * palette.length)];
 
@@ -2549,6 +2758,32 @@ export class Game {
     const w = 4 + Math.random() * 2;
     const d = 3.5 + Math.random() * 1.5;
     const h = 8 + Math.random() * 4;       // 8-12 occasional taller
+    // Snow biome reads as an outdoor festival, not a built-up town.
+    // Replace the procedural "tall building" with a giant decorated
+    // Kenney tree (festival vibe) — much taller than a regular pine.
+    if (this._models) {
+      const km = this._models.cloneByKey('holiday/tree-decorated');
+      if (km) {
+        const targetH = h;          // 8-12m as before
+        const targetW = w * 0.6;
+        this._models.fitToBox(km, { width: targetW, height: targetH, length: targetW, mode: 'fit' });
+        km.position.y = 0.01;
+        km.rotation.y = Math.random() * Math.PI * 2;
+        group.add(km);
+        group.userData.kenneyModel = true;
+        group.position.set(x, 0, z);
+        group.userData.type = 'scenery';
+        group.userData.biome = 'snow';
+        group.userData.kind = 'snow_decorated_tree';
+        group.userData.collidable = true;
+        group.userData.length = d;
+        group.userData.width  = w;
+        group.userData.height = h;
+        this.scene.add(group);
+        this.scenery.push(group);
+        return;
+      }
+    }
     const greys = [0x9aa0a6, 0x7d8590, 0xb0b6bd];
     const body = new THREE.Mesh(
       new THREE.BoxGeometry(w, h, d),
@@ -2851,6 +3086,27 @@ export class Game {
     const w = 4.5 + Math.random() * 2;
     const d = 4 + Math.random() * 1.5;
     const h = 9 + Math.random() * 5;
+    if (this._models) {
+      const KEYS = ['buildings/a', 'buildings/b', 'buildings/c', 'buildings/d', 'buildings/e'];
+      const km = this._models.cloneByKey(KEYS[Math.floor(Math.random() * KEYS.length)]);
+      if (km) {
+        this._models.fitToBox(km, { width: w, height: h, length: d, mode: 'stretch' });
+        km.position.y = 0.01;
+        group.add(km);
+        group.userData.kenneyModel = true;
+        group.position.set(x, 0, z);
+        group.userData.type = 'scenery';
+        group.userData.biome = 'tropical';
+        group.userData.kind = 'tropical_midrise';
+        group.userData.collidable = true;
+        group.userData.length = d;
+        group.userData.width  = w;
+        group.userData.height = h;
+        this.scene.add(group);
+        this.scenery.push(group);
+        return;
+      }
+    }
     const palette = [0xff9aa2, 0xffd6a5, 0xfdffb6, 0xcaffbf, 0x9bf6ff, 0xa0c4ff, 0xbdb2ff];
     const color = palette[Math.floor(Math.random() * palette.length)];
     const body = new THREE.Mesh(
@@ -3003,6 +3259,54 @@ export class Game {
     biome = biome || 'snow';
     // Reddish-brown #8B4513, darker volcanic in tropical
     const baseHex = biome === 'tropical' ? 0x4a3728 : 0x8B4513;
+
+    // Kenney fast-path: clone a fantasy-town rock GLB. We pick a key,
+    // fit it to roughly the same footprint as the procedural boulder
+    // cluster (≈2m wide, 1.5m tall) so the existing hit-box (height
+    // 1.5) still works without changes.
+    if (this._models) {
+      const KEYS = ['rocks/large', 'rocks/wide', 'rocks/small'];
+      const key = KEYS[Math.floor(Math.random() * KEYS.length)];
+      const km = this._models.cloneByKey(key);
+      if (km) {
+        const targetH = key === 'rocks/small' ? 1.0 : 1.5;
+        const targetW = key === 'rocks/wide' ? 2.4 : 2.0;
+        const targetL = key === 'rocks/wide' ? 2.4 : 2.0;
+        this._models.fitToBox(km, { width: targetW, height: targetH, length: targetL, mode: 'fit' });
+        if (biome === 'snow') {
+          // Lightly desaturate the warm fantasy texture so it reads as
+          // a snowy rock rather than a desert one.
+          km.traverse((o) => {
+            if (o.isMesh && o.material && o.material.color) {
+              const c = o.material.color;
+              c.r = c.r * 0.7 + 0.25;
+              c.g = c.g * 0.7 + 0.25;
+              c.b = c.b * 0.7 + 0.3;
+            }
+          });
+        } else if (biome === 'tropical') {
+          km.traverse((o) => {
+            if (o.isMesh && o.material && o.material.color) {
+              o.material.color.multiplyScalar(0.55);
+            }
+          });
+        }
+        km.rotation.y = Math.random() * Math.PI * 2;
+        group.add(km);
+        if (biome === 'snow') {
+          const cap = new THREE.Mesh(
+            new THREE.SphereGeometry(0.32, 6, 6),
+            new THREE.MeshStandardMaterial({ color: 0xfafdff, roughness: 0.7 }),
+          );
+          cap.scale.set(1, 0.4, 1);
+          cap.position.set(0, targetH * 0.92, 0);
+          group.add(cap);
+        }
+        group.userData.kenneyModel = true;
+        group.userData.height = 1.5;
+        return group;
+      }
+    }
 
     // 1 large boulder + (50% of the time) a small companion. Tight footprint
     // so the cluster sits comfortably inside a 3-unit lane.
@@ -3787,9 +4091,18 @@ export class Game {
 
   // Walk the procedural side-decor placement loop. Single source of
   // truth used by init() and restart() so we don't have inline copies
-  // drifting apart.
+  // drifting apart. We walk the FULL course length (not just the first
+  // 400m) so that snow / city / tropical biome scenery actually lands
+  // at the world-Z that matches each biome's threshold (BIOME_SNOW_END,
+  // BIOME_CITY_END). _addSideDecor reads the biome from world-Z when
+  // none is passed, so the spawner picks tents in snow, Kenney
+  // commercial buildings in city, palm-trees + tropical mid-rises after.
+  // Items spawned this way are NOT recycled forward (see _recycleObjects),
+  // so they sit at fixed world-Z for the whole run and just slide
+  // backward relative to the player as they advance.
   _spawnSideDecor() {
-    for (let z = 0; z < 400; z += 12) {
+    const courseLen = this.courseLength || 2000;
+    for (let z = 0; z < courseLen; z += 12) {
       this._addSideDecor(-1, z);
       this._addSideDecor(1, z + 6);
     }
@@ -3901,6 +4214,23 @@ export class Game {
     wedge.castShadow = true;
     wedge.receiveShadow = true;
     group.add(wedge);
+
+    // Kenney rail-slope visual overlay: clone the skate-park slope rail
+    // and stretch it to the exact ramp footprint. Sits on top of the
+    // procedural wedge so the chevrons/lights/bollards stay readable
+    // while the wedge picks up textured detail and a more grounded
+    // material. Falls back to the bare wedge if the model isn't loaded.
+    if (this._models) {
+      const km = this._models.cloneByKey('rails/slope');
+      if (km) {
+        // The Kenney slope is centred at origin with its base at y=0.
+        // Stretch to our exact dimensions so the surface aligns with the
+        // wedge's slope plane.
+        this._models.fitToBox(km, { width, height, length, mode: 'stretch' });
+        km.position.y = 0.001; // sit just above the procedural wedge to win z-fight
+        group.add(km);
+      }
+    }
 
     // ── 1b. Side guardrails (channel walls) ─────────────────────
     // Thin vertical slabs running along the slope on each side, 0.3 tall.
@@ -4192,6 +4522,25 @@ export class Game {
 
   _buildAirplane() {
     const group = new THREE.Group();
+    // Kenney space-craft fast-path: fly cosmetic "speeders" instead of
+    // a generic airliner. The Kenney craft are oriented forward = -Z by
+    // default, so we yaw them +π/2 here so the OUTER group's "forward"
+    // axis is +X — matching the procedural airplane below. The sky-spawn
+    // code applies an additional rotation.y based on startX, so this
+    // local rotation just normalises the local frame.
+    if (this._models) {
+      const KEYS = ['space/speeder-a', 'space/speeder-b', 'space/racer'];
+      const km = this._models.cloneByKey(KEYS[Math.floor(Math.random() * KEYS.length)]);
+      if (km) {
+        // Scale FIRST (in native orientation, where length runs along Z)
+        // so fitToBox measures the un-rotated bounds, THEN apply the yaw
+        // that aligns the craft's forward axis with the group's +X.
+        this._models.fitToBox(km, { length: 5, mode: 'fit' });
+        km.rotation.y = Math.PI / 2;
+        group.add(km);
+        return group;
+      }
+    }
     const bodyMat = new THREE.MeshStandardMaterial({ color: 0xf5f7fa, roughness: 0.4, metalness: 0.6 });
     const accentMat = new THREE.MeshStandardMaterial({ color: 0xd14b4b, roughness: 0.4 });
 
@@ -5923,9 +6272,15 @@ export class Game {
       this._populateProgressMilestones();
     } else {
       // Same-seed replay: reset finish line + mountain blocks back to their
-      // original Zs so they're ahead of the player again.
+      // original Zs so they're ahead of the player again. Side decor
+      // also has to be re-walked because we no longer recycle scenery —
+      // items from the previous round are sitting at negative relative
+      // Z (already passed). Clearing and re-walking puts the same seed's
+      // scenery back at its original world-Z range.
       this._buildFinishLine(this.map.courseLength);
       this._buildMountainBlocks();
+      this._clearScenery();
+      this._spawnSideDecor();
     }
     this._clearConfetti();
     if (this.deathFlag) {
@@ -7359,29 +7714,13 @@ export class Game {
       }
     });
 
-    // Phase 2 perf: pure pool reuse. Scenery items are NEVER removed,
-    // disposed, or re-created during gameplay — they're just teleported
-    // forward in place. For instanced markers (pine/palm/lamp), the
-    // InstancedMesh matrix is rewritten via moveHandle. For non-instanced
-    // groups (cabin/mid-rise/cliff/etc) the Object3D itself moves.
-    for (let i = 0; i < this.scenery.length; i++) {
-      const s = this.scenery[i];
-      if (s.position.z < -30) {
-        let newWorldZ = s.position.z + 400 + Math.random() * 8;
-        // Project-wide rule: never park scenery on a cross-street. Push
-        // the candidate Z out of any conflicting band.
-        const safeZ = this._clampToSafeZ(newWorldZ, 5);
-        if (safeZ != null) newWorldZ = safeZ;
-        const handle = s.userData && s.userData.instanceHandle;
-        if (handle && this.instancedScenery) {
-          this.instancedScenery.moveHandle(handle, s.position.x, newWorldZ, {
-            biome: s.userData.biome || this.currentBiome,
-          });
-        }
-        // Both the marker AND the real-mesh Group track the recycle anchor
-        // in .position.z. Bumping it forward = scenery now sits ahead.
-        s.position.z = newWorldZ;
-      }
-    }
+    // Scenery is now pre-spawned across the entire course at init (see
+    // _spawnSideDecor), with each item placed at its true world-Z so
+    // that biome-correct items land in the right region (snow tents
+    // 0-500m, city buildings 500-1000m, tropical mid-rises 1000m+).
+    // Items therefore must NOT be teleported forward when they pass
+    // behind the player — that would put a tent/building at the wrong
+    // world-Z and visibly contradict the biome stripe. Three.js frustum
+    // culling skips off-screen items, so leaving them in place is free.
   }
 }

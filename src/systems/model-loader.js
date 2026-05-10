@@ -42,6 +42,71 @@ const KENNEY_MANIFEST = {
   'buildings/skyscraper-a': '/models/buildings/building-skyscraper-a.glb',
   'buildings/skyscraper-b': '/models/buildings/building-skyscraper-b.glb',
   'buildings/skyscraper-c': '/models/buildings/building-skyscraper-c.glb',
+
+  // Rocks — Kenney `kenney_fantasy-town-kit`. Replaces the procedural
+  // icosahedron boulder cluster used by `_buildLaneRock`.
+  'rocks/large': '/models/rocks/rock-large.glb',
+  'rocks/small': '/models/rocks/rock-small.glb',
+  'rocks/wide':  '/models/rocks/rock-wide.glb',
+
+  // Rails / ramps — Kenney `kenney_mini-skate`. The slope rail is the
+  // visual swap for our "slider" jump ramps in `_buildRamp`.
+  'rails/slope': '/models/rails/rail-slope.glb',
+  'rails/low':   '/models/rails/rail-low.glb',
+  'rails/high':  '/models/rails/rail-high.glb',
+  'rails/curve': '/models/rails/rail-curve.glb',
+  'rails/half-pipe': '/models/rails/half-pipe.glb',
+
+  // Holiday kit — snow biome festival decor. Pine trees with snow caps,
+  // snowmen, presents, sleds. Replaces our procedural pine path.
+  'holiday/tree-snow-a':   '/models/holiday/tree-snow-a.glb',
+  'holiday/tree-snow-b':   '/models/holiday/tree-snow-b.glb',
+  'holiday/tree-snow-c':   '/models/holiday/tree-snow-c.glb',
+  'holiday/tree-decorated':'/models/holiday/tree-decorated.glb',
+  'holiday/snowman':       '/models/holiday/snowman.glb',
+  'holiday/snow-pile':     '/models/holiday/snow-pile.glb',
+  'holiday/lantern':       '/models/holiday/lantern.glb',
+  'holiday/present-cube':  '/models/holiday/present-a-cube.glb',
+  'holiday/present-rect':  '/models/holiday/present-a-rectangle.glb',
+  'holiday/sled':          '/models/holiday/sled.glb',
+
+  // Survival kit — tents and campfires for the snow event camp village.
+  'survival/tent':            '/models/survival/tent.glb',
+  'survival/tent-canvas':     '/models/survival/tent-canvas.glb',
+  'survival/tent-canvas-half':'/models/survival/tent-canvas-half.glb',
+  'survival/campfire-pit':    '/models/survival/campfire-pit.glb',
+  'survival/campfire-stand':  '/models/survival/campfire-stand.glb',
+
+  // Spectator characters — Mini Characters 1. Used as cheering crowd
+  // along the snow biome event route.
+  'people/male-a':   '/models/people/character-male-a.glb',
+  'people/male-b':   '/models/people/character-male-b.glb',
+  'people/male-c':   '/models/people/character-male-c.glb',
+  'people/male-d':   '/models/people/character-male-d.glb',
+  'people/male-e':   '/models/people/character-male-e.glb',
+  'people/male-f':   '/models/people/character-male-f.glb',
+  'people/female-a': '/models/people/character-female-a.glb',
+  'people/female-b': '/models/people/character-female-b.glb',
+  'people/female-c': '/models/people/character-female-c.glb',
+  'people/female-d': '/models/people/character-female-d.glb',
+
+  // Road furniture — City Kit Roads. Used to dress up the city biome
+  // crossings: highway signs, streetlights, traffic cones.
+  'road/sign-highway':           '/models/road/sign-highway.glb',
+  'road/sign-highway-wide':      '/models/road/sign-highway-wide.glb',
+  'road/sign-highway-detailed':  '/models/road/sign-highway-detailed.glb',
+  'road/light-curved':           '/models/road/light-curved.glb',
+  'road/light-curved-double':    '/models/road/light-curved-double.glb',
+  'road/light-square':           '/models/road/light-square.glb',
+  'road/cone':                   '/models/road/construction-cone.glb',
+  'road/barrier':                '/models/road/construction-barrier.glb',
+  'road/construction-light':     '/models/road/construction-light.glb',
+
+  // Space kit — flying craft replacements for the procedural airplane
+  // sky object. Vertex-colored (no Textures folder needed).
+  'space/speeder-a': '/models/space/craft_speederA.glb',
+  'space/speeder-b': '/models/space/craft_speederB.glb',
+  'space/racer':     '/models/space/craft_racer.glb',
 };
 
 export class ModelLoader {
