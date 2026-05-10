@@ -12,6 +12,7 @@ import { GAME_CONFIG, JANA_BUNNY } from '../utils/constants.js';
 import { generateMap, randomSeed, DEFAULT_COURSE_LENGTH } from '../systems/map-generator.js';
 import { InstancedScenery } from '../systems/instanced-scenery.js';
 import { Rabbit } from '../systems/rabbit.js';
+import { getModelLoader } from '../systems/model-loader.js';
 import {
   COLLIDER_KIND,
   buildCollisionWorld,
@@ -140,6 +141,9 @@ export class Game {
       duckMap: EVENT_DUCK,
       onDuck:  ({ to, durationMs }) => this._duckBgMusic(to, durationMs),
     });
+    // Kenney 3D model cache. Spawners check this and use cloned GLBs
+    // when available, falling back to procedural geometry on miss.
+    this._models = getModelLoader();
 
     // Object pools
     this.obstacles = [];        // legacy in-lane vehicles, no longer spawned
@@ -896,19 +900,33 @@ export class Game {
     if (startBtn) startBtn.disabled = true;
     this.state = 'ready';
     this.loadingEl.textContent = 'Loading audio 0%...';
+    // Track audio + 3D-model preload progress independently and show
+    // the slower of the two as the loading-screen text. Two streams
+    // run in parallel; a single Ready! line replaces both at the end.
+    let audioPct = 0, modelPct = 0;
+    const renderLoading = () => {
+      this.loadingEl.textContent =
+        `Loading… audio ${audioPct}% · models ${modelPct}%`;
+    };
+    renderLoading();
     Promise.all([
       this.sounds.preloadAll({
         onProgress: ({ done, total, failed }) => {
-          const pct = total ? Math.floor((done / total) * 100) : 100;
-          this.loadingEl.textContent = `Loading audio ${pct}%...`;
+          audioPct = total ? Math.floor((done / total) * 100) : 100;
+          renderLoading();
         },
       }),
       this._preloadBgMusic(),
-    ]).then(([sfxResult]) => {
+      this._models.preloadAll(({ done, total, failed }) => {
+        modelPct = total ? Math.floor((done / total) * 100) : 100;
+        renderLoading();
+      }),
+    ]).then(([sfxResult, _bg, modelResult]) => {
       const { ready, total, failed } = sfxResult;
-      this.loadingEl.textContent = (failed > 0)
-        ? `Ready! (${ready}/${total} sounds — ${failed} skipped)`
-        : 'Ready!';
+      const msg = (failed > 0)
+        ? `Ready! (${ready}/${total} sounds, ${failed} skipped${modelResult.failed ? `, ${modelResult.failed} models skipped` : ''})`
+        : `Ready! (${modelResult.ready}/${modelResult.total} models loaded)`;
+      this.loadingEl.textContent = msg;
       if (startBtn) startBtn.disabled = false;
     });
 
@@ -2581,6 +2599,29 @@ export class Game {
     const w = 5 + Math.random() * 3;       // 5-8
     const d = 4 + Math.random() * 3;
     const h = 20 + Math.random() * 20;     // 20-40
+    // Kenney fast-path: pick one of the three skyscraper GLBs.
+    const KENNEY_SKYSCRAPER_KEYS = ['buildings/skyscraper-a', 'buildings/skyscraper-b', 'buildings/skyscraper-c'];
+    if (this._models) {
+      const key = KENNEY_SKYSCRAPER_KEYS[Math.floor(Math.random() * KENNEY_SKYSCRAPER_KEYS.length)];
+      const km = this._models.cloneByKey(key);
+      if (km) {
+        this._models.fitToBox(km, { width: w, height: h, length: d, mode: 'stretch' });
+        km.position.y = 0.01;
+        group.add(km);
+        group.userData.kenneyModel = true;
+        group.position.set(x, 0, z);
+        group.userData.type = 'scenery';
+        group.userData.biome = 'city';
+        group.userData.kind = 'skyscraper';
+        group.userData.collidable = true;
+        group.userData.length = d;
+        group.userData.width  = w;
+        group.userData.height = h;
+        this.scene.add(group);
+        this.scenery.push(group);
+        return group;
+      }
+    }
     const tint = [0x4a90d9, 0x6fb1ff, 0x9bc4e2, 0x6cd2c2];
     const color = tint[Math.floor(Math.random() * tint.length)];
 
@@ -2669,6 +2710,34 @@ export class Game {
     const w = 5 + Math.random() * 2;
     const d = 4 + Math.random() * 1.5;
     const h = 10 + Math.random() * 6;
+    // Kenney fast-path: clone one of the city-kit building GLBs and
+    // scale it to fit the procedural footprint. Falls through to the
+    // procedural box body on cache miss.
+    const KENNEY_BUILDING_KEYS = ['buildings/a', 'buildings/b', 'buildings/c', 'buildings/d', 'buildings/e'];
+    if (this._models) {
+      const key = KENNEY_BUILDING_KEYS[Math.floor(Math.random() * KENNEY_BUILDING_KEYS.length)];
+      const km = this._models.cloneByKey(key);
+      if (km) {
+        this._models.fitToBox(km, { width: w, height: h, length: d, mode: 'stretch' });
+        km.position.y = 0.01;
+        group.add(km);
+        // Skip the procedural body + window-grid block below since the
+        // Kenney model already includes those details. Hit-box userData
+        // is still set at the bottom for AI/collision.
+        group.userData.kenneyModel = true;
+        group.position.set(x, 0, z);
+        group.userData.type = 'scenery';
+        group.userData.biome = 'city';
+        group.userData.kind = 'city_midrise';
+        group.userData.collidable = true;
+        group.userData.length = d;
+        group.userData.width  = w;
+        group.userData.height = h;
+        this.scene.add(group);
+        this.scenery.push(group);
+        return;
+      }
+    }
     const palette = [0xc97f5a, 0x7a8fa6, 0xd9c79a, 0x9ab4a0, 0xb56a6a];
     const color = palette[Math.floor(Math.random() * palette.length)];
     const body = new THREE.Mesh(
@@ -2980,6 +3049,64 @@ export class Game {
   _buildStaticVehicle(type) {
     // All vehicles oriented so length runs along Z (the player's travel axis).
     const group = new THREE.Group();
+
+    // Kenney fast-path: if a matching GLB is preloaded, clone it and
+    // skip the procedural box-geometry build. Hit-box userData (length,
+    // width, height) is set at the BOTTOM of this function — the AI +
+    // collision systems read those, not the visible mesh. So swapping
+    // the visual geometry to the Kenney model is purely cosmetic.
+    const KENNEY_KEY = {
+      taxi:      'cars/taxi',
+      suv:       'cars/suv',
+      truck:     'cars/truck',
+      sedan:     'cars/sedan',
+      cityBus:   'cars/delivery',     // no actual bus in kit; box-truck stand-in
+      schoolBus: 'cars/delivery',
+      van:       'cars/van',
+      police:    'cars/police',
+      ambulance: 'cars/ambulance',
+      firetruck: 'cars/firetruck',
+    };
+    if (this._models && KENNEY_KEY[type]) {
+      const km = this._models.cloneByKey(KENNEY_KEY[type]);
+      if (km) {
+        // Kenney cars face -Z by default — rotate 180° so they point
+        // along +Z (the world's "forward"). The spawner that places
+        // them in the world may rotate them again per-instance.
+        km.rotation.y = Math.PI;
+        // Centre the model on (0, 0, 0). Kenney cars sit on the
+        // origin in their own space; tiny lift so the mesh kisses
+        // the ground without z-fighting.
+        km.position.y = 0.01;
+        group.add(km);
+        // Hit-box dims still set at the bottom of this fn so the
+        // collision/AI math is identical to the procedural path.
+        // Cache the kenney flag for downstream features (wheel spin,
+        // headlight emissive cycle, etc — Phase 2).
+        group.userData.kenneyModel = true;
+        // Apply the fall-through hit-box block by re-using its dims.
+        const heights = {
+          taxi:      1.10, sedan:     1.10,
+          suv:       1.30, truck:     2.40,
+          cityBus:   1.90, schoolBus: 1.15,
+          van:       1.45, police:    1.10, ambulance: 1.85, firetruck: 2.40,
+        };
+        const lengths = {
+          taxi: 3.2, sedan: 3.2, suv: 3.0, truck: 4.6,
+          cityBus: 5.5, schoolBus: 4.5, van: 4.0,
+          police: 3.2, ambulance: 4.6, firetruck: 4.6,
+        };
+        const widths = {
+          taxi: 1.55, sedan: 1.55, suv: 1.70, truck: 1.70,
+          cityBus: 1.85, schoolBus: 1.70, van: 1.70,
+          police: 1.55, ambulance: 1.85, firetruck: 1.85,
+        };
+        group.userData.length = lengths[type] || 3.2;
+        group.userData.width  = widths[type]  || 1.6;
+        group.userData.height = heights[type] || 1.20;
+        return group;
+      }
+    }
 
     const wheelMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.95 });
     const winMat = new THREE.MeshStandardMaterial({
